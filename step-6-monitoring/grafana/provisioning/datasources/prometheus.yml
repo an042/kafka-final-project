@@ -1,0 +1,31 @@
+# prometheus.yml — автоматическая настройка datasource Prometheus в Grafana.
+#
+# Grafana provisioning: при старте контейнера Grafana читает этот файл
+# и создаёт datasource автоматически (не нужно настраивать вручную через UI).
+#
+# После запуска docker compose up:
+#   http://localhost:3000 → Dashboards → Kafka Overview
+#   Datasource Prometheus уже подключён.
+
+apiVersion: 1
+
+datasources:
+  - name: Prometheus
+    # Тип datasource: prometheus (встроен в Grafana)
+    type: prometheus
+    # Единственный datasource по умолчанию
+    isDefault: true
+    # URL внутри docker сети (prometheus — имя сервиса в docker-compose.yml)
+    url: http://prometheus:9090
+    # Доступ: proxy = Grafana обращается к Prometheus сама (не браузер клиента)
+    access: proxy
+    # uid — стабильный идентификатор (используется в дашбордах как ссылка)
+    uid: prometheus-ds
+    # editable=true — можно изменить через UI (отладка)
+    editable: true
+    # Настройки запросов
+    jsonData:
+      # timeInterval — минимальный шаг времени (должен совпадать со scrape_interval)
+      timeInterval: 15s
+      # httpMethod=POST — эффективнее для длинных запросов с большим query
+      httpMethod: POST

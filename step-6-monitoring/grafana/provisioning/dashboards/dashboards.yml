@@ -1,0 +1,28 @@
+# dashboards.yml — настройка автоматической загрузки дашбордов в Grafana.
+#
+# Grafana provisioning: при старте читает JSON файлы из указанной папки
+# и создаёт дашборды автоматически.
+#
+# JSON файлы дашбордов находятся в: grafana/dashboards/
+# Grafana обновляет дашборды при рестарте если файлы изменились.
+
+apiVersion: 1
+
+providers:
+  - name: kafka-dashboards
+    # orgId: 1 — организация по умолчанию
+    orgId: 1
+    # type: file — читать дашборды из файловой системы
+    type: file
+    # disableDeletion=false — удалять дашборды если JSON файл удалён
+    disableDeletion: false
+    # updateIntervalSeconds — проверять обновления каждые 30 секунд
+    updateIntervalSeconds: 30
+    # allowUiUpdates=true — изменения через UI сохраняются (не перетираются из файла)
+    allowUiUpdates: true
+    options:
+      # path — директория с JSON файлами дашбордов (внутри контейнера)
+      # Монтируется через docker-compose: ./grafana/dashboards:/var/lib/grafana/dashboards
+      path: /var/lib/grafana/dashboards
+      # foldersFromFilesStructure=true — подпапки → папки в Grafana UI
+      foldersFromFilesStructure: false

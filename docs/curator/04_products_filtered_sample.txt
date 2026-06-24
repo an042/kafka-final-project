@@ -1,0 +1,9 @@
+=== products-filtered.jsonl — первые 5 строк ===
+{quantity=42, price=89999, name=Ноутбук Dell XPS 13, description=Ультрабук с процессором Intel Core i7-1360P, 16 ГБ RAM, 512 ГБ SSD, created_at=2024-01-10T08:00:00Z, currency=RUB, id=prod-001, category=electronics, brand=Dell, seller_id=seller-tech-001, tags=[laptop, ultrabook, intel, work]}
+{quantity=200, price=12990, name=Кроссовки Nike Air Max 90, description=Классические беговые кроссовки с системой амортизации Air, размеры 36-47, created_at=2024-01-14T09:00:00Z, currency=RUB, id=prod-006, category=footwear, brand=Nike, seller_id=seller-sport-005, tags=[sneakers, running, sport, casual]}
+{quantity=75, price=5990, name=Гантели разборные 30 кг (пара), description=Разборные гантели с хромированным покрытием, регулировка от 2 до 30 кг, created_at=2024-01-15T08:00:00Z, currency=RUB, id=prod-008, category=sports, brand=Torneo, seller_id=seller-sport-005, tags=[dumbbells, fitness, strength, gym]}
+{quantity=65, price=44990, name=Умные часы Apple Watch Series 9, description=45 мм, чип S9, 18 ч АКБ, Always-On Retina дисплей, ЭКГ, датчик кислорода, created_at=2024-01-15T11:00:00Z, currency=RUB, id=prod-010, category=electronics, brand=Apple, seller_id=seller-mobile-002, tags=[smartwatch, fitness, health, ios]}
+{quantity=12, price=34990, name=Горный велосипед Trek Marlin 5, description=21 скорость, рама алюминий 29", дисковые тормоза Shimano, размер М (17.5"), created_at=2024-01-16T11:00:00Z, currency=RUB, id=prod-013, category=sports, brand=Trek, seller_id=seller-sport-005, tags=[bicycle, mtb, outdoor, sport]}
+
+=== Итого строк ===
+2404 /data/products-filtered.jsonl

@@ -1,0 +1,30 @@
+2026/06/24 12:50:14 PASSED  [prod-012] Рюкзак Thule Crossover 2 30L (category=accessories) → products-filtered partition=2 offset=626
+2026/06/24 12:50:15 FILTERED [prod-016] Сигареты Marlboro Red (блок 10 пачек) (category=tobacco) — запрещённая категория
+2026/06/24 12:50:15 PASSED  [prod-013] Горный велосипед Trek Marlin 5 (category=sports) → products-filtered partition=1 offset=1339
+2026/06/24 12:50:17 PASSED  [prod-014] Набор кухонных ножей Wüsthof Classic (6 предметов) (category=kitchen) → products-filtered partition=0 offset=417
+2026/06/24 12:50:17 FILTERED [prod-019] Пиво Heineken (упаковка 24 банки 0.5 л) (category=alcohol) — запрещённая категория
+2026/06/24 12:50:18 PASSED  [prod-015] Плед флисовый двусторонний 200×220 см (category=home) → products-filtered partition=2 offset=627
+2026/06/24 12:50:18 FILTERED [prod-020] Электронная сигарета IQOS ILUMA (category=tobacco) — запрещённая категория
+2026/06/24 12:50:24 PASSED  [prod-001] Ноутбук Dell XPS 13 (category=electronics) → products-filtered partition=1 offset=1340
+2026/06/24 12:50:24 FILTERED [prod-016] Сигареты Marlboro Red (блок 10 пачек) (category=tobacco) — запрещённая категория
+2026/06/24 12:50:24 FILTERED [prod-017] Виски Jack Daniel's Tennessee 0.7 л (category=alcohol) — запрещённая категория
+2026/06/24 12:50:26 FILTERED [prod-018] Нож охотничий Buck 119 Special (category=weapons) — запрещённая категория
+2026/06/24 12:50:27 FILTERED [prod-019] Пиво Heineken (упаковка 24 банки 0.5 л) (category=alcohol) — запрещённая категория
+2026/06/24 12:50:29 PASSED  [prod-006] Кроссовки Nike Air Max 90 (category=footwear) → products-filtered partition=1 offset=1341
+2026/06/24 12:50:30 FILTERED [prod-020] Электронная сигарета IQOS ILUMA (category=tobacco) — запрещённая категория
+2026/06/24 12:50:32 PASSED  [prod-008] Гантели разборные 30 кг (пара) (category=sports) → products-filtered partition=1 offset=1342
+2026/06/24 12:50:32 PASSED  [prod-001] Ноутбук Dell XPS 13 (category=electronics) → products-filtered partition=1 offset=1343
+2026/06/24 12:50:33 PASSED  [prod-002] Смартфон Samsung Galaxy S24 Ultra (category=electronics) → products-filtered partition=2 offset=628
+2026/06/24 12:50:34 PASSED  [prod-010] Умные часы Apple Watch Series 9 (category=electronics) → products-filtered partition=1 offset=1344
+2026/06/24 12:50:34 PASSED  [prod-003] Наушники Sony WH-1000XM5 (category=electronics) → products-filtered partition=0 offset=418
+2026/06/24 12:50:35 PASSED  [prod-004] Книга «Мастер и Маргарита» (category=books) → products-filtered partition=2 offset=629
+2026/06/24 12:50:37 PASSED  [prod-013] Горный велосипед Trek Marlin 5 (category=sports) → products-filtered partition=1 offset=1345
+2026/06/24 12:50:37 PASSED  [prod-005] Книга «Чистый код» (category=books) → products-filtered partition=0 offset=419
+2026/06/24 12:50:38 PASSED  [prod-006] Кроссовки Nike Air Max 90 (category=footwear) → products-filtered partition=1 offset=1346
+2026/06/24 12:50:38 FILTERED [prod-016] Сигареты Marlboro Red (блок 10 пачек) (category=tobacco) — запрещённая категория
+2026/06/24 12:50:39 PASSED  [prod-007] Кофемашина DeLonghi ECAM 370.95 (category=appliances) → products-filtered partition=2 offset=630
+2026/06/24 12:50:40 PASSED  [prod-008] Гантели разборные 30 кг (пара) (category=sports) → products-filtered partition=1 offset=1347
+2026/06/24 12:50:41 FILTERED [prod-019] Пиво Heineken (упаковка 24 банки 0.5 л) (category=alcohol) — запрещённая категория
+2026/06/24 12:50:41 PASSED  [prod-009] Электросамокат Xiaomi Electric Scooter 4 Pro (category=transport) → products-filtered partition=2 offset=631
+2026/06/24 12:50:42 FILTERED [prod-020] Электронная сигарета IQOS ILUMA (category=tobacco) — запрещённая категория
+2026/06/24 12:50:42 PASSED  [prod-010] Умные часы Apple Watch Series 9 (category=electronics) → products-filtered partition=1 offset=1348

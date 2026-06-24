@@ -1,0 +1,9 @@
+=== Prometheus Targets ===
+JOB                       INSTANCE                       HEALTH     ERROR
+--------------------------------------------------------------------------------
+alertmanager              alertmanager:9093              up         
+kafka                     kafka-3:9103                   up         
+kafka                     kafka-1:9101                   up         
+kafka                     kafka-2:9102                   up         
+kafka-analytics           kafka-analytics:9104           down       Get "http://kafka-analytics:91
+prometheus                prometheus:9090                up         

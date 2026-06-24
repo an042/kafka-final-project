@@ -1,0 +1,117 @@
+# kafka-jmx-exporter.yml — конфигурация JMX Prometheus Exporter для Kafka.
+#
+# JMX Exporter — java-агент, который:
+#   1. Подключается к JMX MBeans Kafka брокера
+#   2. Собирает метрики (throughput, latency, consumer lag и т.д.)
+#   3. Экспортирует их в формате Prometheus на HTTP порту
+#
+# Как подключить к брокеру (добавить в cluster-1/docker-compose.yml):
+#
+#   kafka-1:
+#     volumes:
+#       - ./jmx-exporter/jmx_prometheus_javaagent-1.0.1.jar:/opt/jmx/agent.jar:ro
+#       - ./jmx-exporter/kafka-jmx-exporter.yml:/opt/jmx/config.yml:ro
+#     environment:
+#       KAFKA_OPTS: "-javaagent:/opt/jmx/agent.jar=9101:/opt/jmx/config.yml"
+#     ports:
+#       - "9101:9101"
+#
+# Скачать агент:
+#   curl -L -o jmx-exporter/jmx_prometheus_javaagent-1.0.1.jar \
+#     https://github.com/prometheus/jmx_exporter/releases/download/1.0.1/jmx_prometheus_javaagent-1.0.1.jar
+
+# Интервал кеширования JMX данных (секунды)
+# 0 = брать свежие данные при каждом scrape
+startDelaySeconds: 0
+
+# ВАЖНО: hostPort НЕ указываем в режиме java-агента (-javaagent:...).
+# hostPort нужен только когда exporter запускается как отдельный процесс
+# и подключается к удалённому JVM по RMI. В режиме агента он уже внутри JVM.
+
+# ── Правила для Kafka MBeans ──────────────────────────────────────────────────
+#
+# Каждое правило (pattern) — регулярное выражение для имени MBean.
+# Capture groups ($1, $2 и т.д.) используются для формирования имени метрики.
+
+rules:
+
+  # ── Пропускная способность брокера ────────────────────────────────────────────
+
+  # kafka.server:type=BrokerTopicMetrics,name=MessagesInPerSec — сообщений в секунду
+  - pattern: kafka.server<type=BrokerTopicMetrics, name=(\w+)><>(\w+)
+    name: kafka_server_brokertopicmetrics_$1_$2
+    labels:
+      # Метка topic — имя топика (из MBean атрибута)
+      topic: "$3"
+
+  # kafka.server:type=BrokerTopicMetrics — байты в/из секунду
+  - pattern: 'kafka.server<type=BrokerTopicMetrics, name=(BytesInPerSec|BytesOutPerSec), topic=(.+)><>(\w+)'
+    name: kafka_server_brokertopicmetrics_$1_$3
+    labels:
+      topic: "$2"
+
+  # ── Производительность producer/consumer ──────────────────────────────────────
+
+  # Латентность fetch запросов (consumer читает)
+  - pattern: 'kafka.network<type=RequestMetrics, name=(\w+), request=FetchConsumer><>(\w+)'
+    name: kafka_network_requestmetrics_fetchconsumer_$1_$2
+
+  # Латентность produce запросов
+  - pattern: 'kafka.network<type=RequestMetrics, name=(\w+), request=Produce><>(\w+)'
+    name: kafka_network_requestmetrics_produce_$1_$2
+
+  # ── Consumer Group Lag ────────────────────────────────────────────────────────
+
+  # Отставание consumer группы — ключевая метрика для алертов
+  - pattern: 'kafka.consumer<type=consumer-fetch-manager-metrics, client-id=(.+), topic=(.+), partition=(\d+)><>records-lag'
+    name: kafka_consumer_group_lag
+    labels:
+      client: "$1"
+      topic: "$2"
+      partition: "$3"
+
+  # ── Репликация ───────────────────────────────────────────────────────────────
+
+  # Под-реплицированные партиции (ISR < RF)
+  - pattern: 'kafka.server<type=ReplicaManager, name=UnderReplicatedPartitions><>Value'
+    name: kafka_server_replicamanager_underreplicatedpartitions
+
+  # Количество лидер-партиций на брокере
+  - pattern: 'kafka.server<type=ReplicaManager, name=LeaderCount><>Value'
+    name: kafka_server_replicamanager_leadercount
+
+  # Количество партиций всего
+  - pattern: 'kafka.server<type=ReplicaManager, name=PartitionCount><>Value'
+    name: kafka_server_replicamanager_partitioncount
+
+  # ── KRaft контроллер ─────────────────────────────────────────────────────────
+
+  # Активный контроллер (1 = этот брокер контроллер, 0 = нет)
+  - pattern: 'kafka.controller<type=KafkaController, name=ActiveControllerCount><>Value'
+    name: kafka_controller_kafkacontroller_activecontrollercount
+
+  # ── Размер логов (использование диска) ────────────────────────────────────────
+
+  - pattern: 'kafka.log<type=Log, name=Size, topic=(.+), partition=(\d+)><>Value'
+    name: kafka_log_log_size
+    labels:
+      topic: "$1"
+      partition: "$2"
+
+  # ── Сеть ─────────────────────────────────────────────────────────────────────
+
+  # Количество открытых соединений
+  - pattern: 'kafka.server<type=socket-server-metrics, listener=(.+), networkProcessor=(\d+)><>connection-count'
+    name: kafka_server_socket_server_connection_count
+    labels:
+      listener: "$1"
+      processor: "$2"
+
+  # ── Catch-all: все остальные kafka.* MBeans ────────────────────────────────
+
+  # Собираем всё остальное с автоматическим именованием
+  # (для полноты — можно отключить если метрик слишком много)
+  - pattern: 'kafka.(\w+)<type=(.+), name=(.+)><>Value'
+    name: kafka_$1_$2_$3
+    lowercase_output_label_names: true
+    lowercase_output_name: true

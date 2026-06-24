@@ -1,0 +1,82 @@
+# docker-compose.yml — запуск PySpark задачи аналитики.
+#
+# Spark читает топик client-events из кластера 2 (реплицированный из кластера 1 через MM2),
+# считает популярные товары, пишет рекомендации в топик recommendations.
+#
+# Зависимости:
+#   - Кластер 2 запущен и доступен: cluster-2/docker-compose.yml
+#   - MM2 запущен и реплицировал client-events: mirrormaker/docker-compose.yml
+#   - Сеть kafka_cluster1_net существует (создаётся кластером 1)
+#     и kafka_cluster2_net (кластером 2)
+#
+# Запуск:
+#   docker compose up (spark-submit запускается автоматически)
+#
+# Проверка рекомендаций:
+#   docker exec kafka-analytics kafka-console-consumer.sh \
+#     --bootstrap-server kafka-analytics:9092 \
+#     --topic recommendations --from-beginning
+
+services:
+  # ── Spark задача аналитики ──────────────────────────────────────────────────
+
+  spark-analytics:
+    # bitnami/spark — Docker образ с предустановленным Spark 3.5
+    # 3.5 — совместима с kafka коннектором spark-sql-kafka-0-10_2.12:3.5.3
+    image: bitnamilegacy/spark:3.5
+
+    # Имя контейнера для удобного docker exec
+    container_name: spark-analytics
+
+    # Запускаем spark-submit вместо стандартного spark-shell
+    # --packages — загружает Kafka коннектор из Maven Central
+    # --py-files — добавляем наш скрипт
+    command:
+      - spark-submit
+      # Kafka коннектор: spark-sql-kafka-0-10 для Spark 3.5 + Scala 2.12
+      - --packages
+      - org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.3
+      # Spark задача
+      - /opt/spark-job/recommendations.py
+
+    # Монтируем наш скрипт внутрь контейнера
+    volumes:
+      # spark-job/ → /opt/spark-job/ (только для чтения)
+      - ./spark-job:/opt/spark-job:ro
+      # CA сертификат для TLS подключения к kafka-analytics
+      - ../../step-2-kafka/ssl/certs/ca.crt:/opt/ca/ca.crt:ro
+
+    environment:
+      # Брокеры кластера 2 — аналитический кластер с репликами из MM2
+      - KAFKA_BROKERS=kafka-analytics:9092
+      # Учётные данные пользователя spark (из cluster-2/docker-compose.yml)
+      - KAFKA_USER=spark
+      - KAFKA_PASSWORD=SparkPass1
+      # Путь к CA сертификату внутри контейнера
+      - KAFKA_TLS_CA=/opt/ca/ca.crt
+      # Входной топик: MM2 добавляет "cluster1." к именам (cluster1.client-events)
+      - TOPIC_IN=cluster1.client-events
+      # Выходной топик: создан в cluster-2/setup.sh
+      - TOPIC_OUT=recommendations
+      # Уменьшаем память: для учебного проекта достаточно 1 ГБ
+      - SPARK_DRIVER_MEMORY=1g
+      - SPARK_EXECUTOR_MEMORY=1g
+
+    # Подключаемся к обеим сетям — чтобы видеть kafka-analytics
+    networks:
+      # Сеть кластера 2 (аналитического)
+      - cluster2_net
+
+    # Политика перезапуска: не перезапускать автоматически
+    # Spark задача завершается когда нет данных — это нормально
+    restart: "no"
+
+# ── Сети ───────────────────────────────────────────────────────────────────────
+
+networks:
+  # Внешняя сеть кластера 2 (создана cluster-2/docker-compose.yml)
+  # external: true — docker compose не пытается создать эту сеть
+  cluster2_net:
+    external: true
+    # Имя сети совпадает с name: в cluster-2/docker-compose.yml
+    name: kafka-cluster-net

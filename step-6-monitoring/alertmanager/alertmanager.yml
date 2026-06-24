@@ -1,0 +1,111 @@
+# alertmanager.yml — конфигурация маршрутизации алертов.
+#
+# Alertmanager получает алерты от Prometheus и отправляет уведомления.
+# В нашем проекте: все алерты → Telegram.
+#
+# Настройка Telegram бота:
+#   1. Создайте бота через @BotFather → получите BOT_TOKEN
+#   2. Узнайте chat_id: отправьте боту /start, затем
+#      curl "https://api.telegram.org/bot<TOKEN>/getUpdates"
+#   3. Заполните bot_token и chat_id ниже (или передайте через env)
+#
+# ВАЖНО: не коммитьте файл с реальным токеном в git!
+# Используйте переменные окружения или .env файл.
+
+# ── Глобальные настройки ──────────────────────────────────────────────────────
+
+global:
+  # Время ожидания для HTTP запросов к receivers
+  http_config:
+    follow_redirects: true
+
+  # resolve_timeout — через сколько считать алерт "resolved" если Prometheus
+  # перестал его отправлять (5 минут = разумное значение)
+  resolve_timeout: 5m
+
+# ── Шаблоны ───────────────────────────────────────────────────────────────────
+
+# Файлы с Go-шаблонами для форматирования сообщений
+templates:
+  - /etc/alertmanager/templates/*.tmpl
+
+# ── Маршруты ──────────────────────────────────────────────────────────────────
+
+route:
+  # receiver по умолчанию — все необработанные алерты идут сюда
+  receiver: telegram-notifications
+
+  # group_by — группировать алерты по имени (не спамить при массовом сбое)
+  # Все алерты с одним alertname в одно Telegram сообщение
+  group_by: ['alertname', 'cluster', 'broker']
+
+  # group_wait — ждать N секунд перед отправкой первого уведомления группы
+  # Позволяет собрать несколько алертов в одно сообщение
+  group_wait: 30s
+
+  # group_interval — минимальный интервал между уведомлениями для одной группы
+  group_interval: 5m
+
+  # repeat_interval — повторять уведомление если алерт не разрешился
+  repeat_interval: 1h
+
+  # Дочерние маршруты — специальные правила для разных типов алертов
+  routes:
+    # Critical алерты: отправлять быстро, повторять чаще
+    - matchers:
+        - severity=critical
+      receiver: telegram-notifications
+      # Не группировать critical — отправлять сразу
+      group_wait: 5s
+      repeat_interval: 15m
+
+    # Warning алерты: стандартный режим (из корневого route)
+    - matchers:
+        - severity=warning
+      receiver: telegram-notifications
+      group_wait: 30s
+      repeat_interval: 2h
+
+# ── Получатели уведомлений ────────────────────────────────────────────────────
+
+receivers:
+  - name: telegram-notifications
+    telegram_configs:
+      # !! ЗАМЕНИТЬ: токен вашего Telegram бота
+      # Получить через @BotFather: /newbot
+      - bot_token: "TELEGRAM_BOT_TOKEN_PLACEHOLDER"
+
+        # chat_id вашего личного чата с ботом
+        # (узнать: curl https://api.telegram.org/bot<TOKEN>/getUpdates)
+        chat_id: 6189975749
+
+        # parse_mode=HTML: используем HTML форматирование в сообщениях
+        parse_mode: HTML
+
+        # Шаблон сообщения для Telegram
+        # {{ range .Alerts }} — перебираем все алерты в группе
+        # .Status — "firing" (активный) или "resolved" (устранён)
+        message: |-
+          {{ if eq .Status "firing" }}🔴{{ else }}🟢{{ end }} <b>{{ .CommonLabels.alertname }}</b>
+
+          {{ range .Alerts }}
+          <b>Статус:</b> {{ .Status | toUpper }}
+          <b>Кластер:</b> {{ .Labels.cluster }}
+          {{ if .Labels.broker }}<b>Брокер:</b> {{ .Labels.broker }}{{ end }}
+          <b>Описание:</b> {{ .Annotations.description }}
+
+          {{ end }}
+          <i>Время: {{ .CommonAnnotations.summary }}</i>
+
+# ── Подавление алертов ────────────────────────────────────────────────────────
+
+inhibit_rules:
+  # Если брокер упал (KafkaBrokerDown) — подавить warning алерты с того же брокера
+  # (под-репликация и lag — следствие, а не отдельная проблема)
+  - source_matchers:
+      - alertname=KafkaBrokerDown
+      - severity=critical
+    target_matchers:
+      - severity=warning
+    # equal — подавлять только если метки cluster и broker совпадают
+    equal: ['cluster', 'broker']

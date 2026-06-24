@@ -1,0 +1,96 @@
+# prometheus.yml — конфигурация сбора метрик Prometheus.
+#
+# Prometheus периодически ("scrape") опрашивает endpoints метрик.
+# Метрики Kafka экспортируются через JMX Exporter (java-агент внутри брокеров).
+#
+# JMX Exporter запускается с брокером и слушает на отдельном порту:
+#   kafka-1: 9101
+#   kafka-2: 9102
+#   kafka-3: 9103
+#
+# Для активации JMX Exporter нужно добавить в cluster-1/docker-compose.yml:
+#   KAFKA_OPTS: "-javaagent:/opt/bitnami/kafka/libs/jmx_prometheus_javaagent.jar=9101:/opt/bitnami/kafka/config/jmx-exporter.yml"
+#   ports: ["9101:9101"]
+# (см. jmx-exporter/README.md)
+
+# ── Глобальные настройки ──────────────────────────────────────────────────────
+
+global:
+  # Интервал сбора метрик: каждые 15 секунд
+  # Для учебного проекта достаточно; в продакшне обычно 30s
+  scrape_interval: 15s
+
+  # Интервал проверки правил алертов: каждые 15 секунд
+  evaluation_interval: 15s
+
+  # Таймаут одного scrape запроса
+  scrape_timeout: 10s
+
+# ── Правила алертов ────────────────────────────────────────────────────────────
+
+# Файлы с правилами алертов (AlertingRules)
+# Prometheus оценивает эти правила каждые evaluation_interval секунд
+rule_files:
+  # Правила алертов для Kafka (офлайн брокер, отставание consumer group и т.д.)
+  - /etc/prometheus/alert.rules.yml
+
+# ── Интеграция с Alertmanager ─────────────────────────────────────────────────
+
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets:
+            # Alertmanager запущен в той же docker сети
+            - alertmanager:9093
+
+# ── Targets — что собирать ────────────────────────────────────────────────────
+
+scrape_configs:
+
+  # ── Сам Prometheus (self-monitoring) ──────────────────────────────────────────
+  - job_name: prometheus
+    static_configs:
+      - targets:
+          # Prometheus сам экспортирует метрики на /metrics
+          - prometheus:9090
+
+  # ── Kafka брокеры через JMX Exporter ────────────────────────────────────────
+  - job_name: kafka
+    # Метки добавляются к каждой метрике из этой группы
+    static_configs:
+      - targets:
+          # Каждый брокер экспортирует JMX метрики на отдельном порту
+          # Порты открыты в cluster-1/docker-compose.yml (ports: 9101:9101 etc.)
+          - kafka-1:9101
+          - kafka-2:9102
+          - kafka-3:9103
+        labels:
+          # Метка cluster помогает различать метрики в мультикластерной среде
+          cluster: cluster-1
+
+    # Каждые 30 секунд для брокеров (JMX дорогой в плане CPU)
+    scrape_interval: 30s
+
+    # Метки которые Prometheus добавит к каждой метрике
+    relabel_configs:
+      - source_labels: [__address__]
+        # Извлекаем имя брокера из адреса (kafka-1:9101 → kafka-1)
+        regex: (kafka-\d+):.*
+        target_label: broker
+        replacement: "$1"
+
+  # ── Kafka аналитического кластера (cluster-2) ─────────────────────────────
+  - job_name: kafka-analytics
+    static_configs:
+      - targets:
+          # kafka-analytics открывает JMX на порту 9104
+          - kafka-analytics:9104
+        labels:
+          cluster: cluster-2
+    scrape_interval: 30s
+
+  # ── Alertmanager (self-monitoring) ──────────────────────────────────────────
+  - job_name: alertmanager
+    static_configs:
+      - targets:
+          - alertmanager:9093

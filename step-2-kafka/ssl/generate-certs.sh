@@ -65,9 +65,8 @@ echo "    ОК: ca.key + ca.crt"
 #   3. Подписываем CSR нашим CA — получаем сертификат
 #
 # CN = Docker hostname брокера (kafka-1, kafka-2, etc.)
-# Клиент при TLS-рукопожатии проверяет что CN совпадает с хостом — это обязательно.
-# Альтернатива: SAN (Subject Alternative Names) — более современный подход,
-# но для учебного проекта CN достаточно.
+# SAN (subjectAltName) = DNS:kafka-N + IP:127.0.0.1
+# Go 1.15+ требует SAN — CN без SAN отклоняется (RFC 2818). Это не настройка Go, это стандарт.
 
 echo ""
 echo "==> Шаг 2: Генерируем ключи и сертификаты брокеров"
@@ -89,13 +88,18 @@ for BROKER in $BROKERS; do
 
   # Подписываем CSR нашим CA → получаем подписанный сертификат брокера
   # -CAcreateserial — автоматически создаёт файл серийных номеров (ca.srl)
+  # -extfile <(...) — добавляем SAN (Subject Alternative Names):
+  #   DNS:$BROKER — Docker hostname (kafka-1 и т.д.)
+  #   IP:127.0.0.1 — для соединений с хост-машины через маппинг портов
+  # SAN обязателен: Go 1.15+ отклоняет сертификаты только с CN (RFC 2818)
   openssl x509 -req \
     -CA "$CERTS_DIR/ca.crt" \
     -CAkey "$CERTS_DIR/ca.key" \
     -CAcreateserial \
     -in "$CERTS_DIR/$BROKER.csr" \
     -days "$VALIDITY" \
-    -out "$CERTS_DIR/$BROKER.crt"
+    -out "$CERTS_DIR/$BROKER.crt" \
+    -extfile <(printf "subjectAltName=DNS:%s,IP:127.0.0.1\n" "$BROKER")
 
   # CSR больше не нужен после подписи
   rm "$CERTS_DIR/$BROKER.csr"

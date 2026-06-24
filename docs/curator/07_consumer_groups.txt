@@ -1,0 +1,17 @@
+=== Consumer Groups ===
+connect-filesink-group
+stream-processor
+
+=== stream-processor lag ===
+
+GROUP            TOPIC           PARTITION  CURRENT-OFFSET  LOG-END-OFFSET  LAG             CONSUMER-ID                                 HOST            CLIENT-ID
+stream-processor products-raw    0          -               578             -               sarama-5d196364-e308-4231-ad0f-c5c0b05f6ffa /172.19.0.8     sarama
+stream-processor products-raw    1          -               2253            -               sarama-5d196364-e308-4231-ad0f-c5c0b05f6ffa /172.19.0.8     sarama
+stream-processor products-raw    2          -               810             -               sarama-5d196364-e308-4231-ad0f-c5c0b05f6ffa /172.19.0.8     sarama
+
+=== connect lag ===
+
+GROUP                  TOPIC             PARTITION  CURRENT-OFFSET  LOG-END-OFFSET  LAG             CONSUMER-ID                                                                          HOST            CLIENT-ID
+connect-filesink-group products-filtered 0          460             462             2               connector-consumer-products-filtered-filesink-0-7fda6254-1e38-43a1-84e9-50f86f9e7f3f /172.19.0.9     connector-consumer-products-filtered-filesink-0
+connect-filesink-group products-filtered 1          1408            1410            2               connector-consumer-products-filtered-filesink-0-7fda6254-1e38-43a1-84e9-50f86f9e7f3f /172.19.0.9     connector-consumer-products-filtered-filesink-0
+connect-filesink-group products-filtered 2          694             697             3               connector-consumer-products-filtered-filesink-0-7fda6254-1e38-43a1-84e9-50f86f9e7f3f /172.19.0.9     connector-consumer-products-filtered-filesink-0

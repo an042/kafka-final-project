@@ -46,7 +46,16 @@ services:
       # 9092 на хосте → 9092 в контейнере (SASL_SSL listener для клиентов)
       # Используется для отладки с хост-машины (см. примечание в setup.sh)
       - "9092:9092"
+      # 9101 — JMX Prometheus Exporter (kafka-1). Prometheus scrape: http://kafka-1:9101/metrics
+      # Используется в step-6-monitoring/prometheus/prometheus.yml
+      - "9101:9101"
     environment:
+      # JMX Exporter java-агент: собирает JMX метрики Kafka → HTTP /metrics в формате Prometheus
+      # Требует jar файл: скачайте в step-2-kafka/cluster-1/jmx/:
+      #   curl -Lo jmx/jmx_prometheus_javaagent.jar \
+      #     https://github.com/prometheus/jmx_exporter/releases/download/1.0.1/jmx_prometheus_javaagent-1.0.1.jar
+      # Если файл не существует — переменную можно закомментировать (брокер запустится без метрик)
+      KAFKA_OPTS: "-javaagent:/opt/jmx/jmx_prometheus_javaagent.jar=9101:/opt/jmx/kafka-jmx-exporter.yml"
       # ── KRaft: роли и идентификация ─────────────────────────────────────────
       # broker  — хранит сообщения топиков
       # controller — управляет метаданными (аналог ZooKeeper лидера)
@@ -152,16 +161,22 @@ services:
       - ../ssl/certs/kafka-1.key:/bitnami/kafka/config/certs/kafka.keystore.key:ro
       # kafka.truststore.pem — CA сертификат для проверки партнёров (bitnami 3.7 ожидает это имя)
       - ../ssl/certs/ca.crt:/bitnami/kafka/config/certs/kafka.truststore.pem:ro
+      # JMX Exporter jar и конфиг (необходим для метрик Prometheus в Шаге 6)
+      # Создайте директорию и скачайте jar: mkdir jmx && curl -Lo jmx/jmx_prometheus_javaagent.jar ...
+      - ./jmx:/opt/jmx:ro
 
     healthcheck:
       # SASL_SSL listener требует аутентификации даже для healthcheck внутри контейнера.
       # Пишем admin.properties inline через printf, затем выполняем broker-api-versions.
       # ssl.truststore.type=PEM — используем PEM truststore (не JKS)
       # ВАЖНО: используем kafka-1:9092, не localhost — сертификат выпущен для kafka-1, не localhost
+      # KAFKA_OPTS="" — сбрасываем перед вызовом: KAFKA_OPTS содержит -javaagent JMX,
+      # который подхватывается ВСЕМИ Java-процессами контейнера, включая healthcheck-утилиту.
+      # Без сброса healthcheck падает с "Prometheus JMX Exporter exiting".
       test:
         - "CMD-SHELL"
         - >-
-          printf 'security.protocol=SASL_SSL\nsasl.mechanism=SCRAM-SHA-512\nsasl.jaas.config=org.apache.kafka.common.security.scram.ScramLoginModule required username=\"admin\" password=\"AdminPass1\";\nssl.truststore.location=/bitnami/kafka/config/certs/kafka.truststore.pem\nssl.truststore.type=PEM\n' > /tmp/hc.properties && kafka-broker-api-versions.sh --bootstrap-server kafka-1:9092 --command-config /tmp/hc.properties > /dev/null 2>&1
+          printf 'security.protocol=SASL_SSL\nsasl.mechanism=SCRAM-SHA-512\nsasl.jaas.config=org.apache.kafka.common.security.scram.ScramLoginModule required username=\"admin\" password=\"AdminPass1\";\nssl.truststore.location=/bitnami/kafka/config/certs/kafka.truststore.pem\nssl.truststore.type=PEM\n' > /tmp/hc.properties && KAFKA_OPTS="" kafka-broker-api-versions.sh --bootstrap-server kafka-1:9092 --command-config /tmp/hc.properties > /dev/null 2>&1
       # Kafka стартует медленно (JVM + KRaft инициализация) — ждём 30 секунд
       start_period: 30s
       # Проверяем каждые 10 секунд
@@ -180,7 +195,11 @@ services:
       # Хост-порт 9093 → контейнер-порт 9092 (SASL_SSL)
       # Не путать с CONTROLLER-портом 9093 внутри контейнера!
       - "9093:9092"
+      # 9102 — JMX Prometheus Exporter для kafka-2
+      - "9102:9102"
     environment:
+      # JMX Exporter для kafka-2 (порт 9102)
+      KAFKA_OPTS: "-javaagent:/opt/jmx/jmx_prometheus_javaagent.jar=9102:/opt/jmx/kafka-jmx-exporter.yml"
       KAFKA_CFG_PROCESS_ROLES: broker,controller
       # Уникальный ID: 2 (у kafka-1 = 1, у kafka-3 = 3)
       KAFKA_CFG_NODE_ID: 2
@@ -212,12 +231,14 @@ services:
       - ../ssl/certs/kafka-2.chain.crt:/bitnami/kafka/config/certs/kafka.keystore.pem:ro
       - ../ssl/certs/kafka-2.key:/bitnami/kafka/config/certs/kafka.keystore.key:ro
       - ../ssl/certs/ca.crt:/bitnami/kafka/config/certs/kafka.truststore.pem:ro
+      # JMX Exporter
+      - ./jmx:/opt/jmx:ro
     healthcheck:
       # kafka-2:9092 — сертификат выпущен для kafka-2, localhost не подойдёт
       test:
         - "CMD-SHELL"
         - >-
-          printf 'security.protocol=SASL_SSL\nsasl.mechanism=SCRAM-SHA-512\nsasl.jaas.config=org.apache.kafka.common.security.scram.ScramLoginModule required username=\"admin\" password=\"AdminPass1\";\nssl.truststore.location=/bitnami/kafka/config/certs/kafka.truststore.pem\nssl.truststore.type=PEM\n' > /tmp/hc.properties && kafka-broker-api-versions.sh --bootstrap-server kafka-2:9092 --command-config /tmp/hc.properties > /dev/null 2>&1
+          printf 'security.protocol=SASL_SSL\nsasl.mechanism=SCRAM-SHA-512\nsasl.jaas.config=org.apache.kafka.common.security.scram.ScramLoginModule required username=\"admin\" password=\"AdminPass1\";\nssl.truststore.location=/bitnami/kafka/config/certs/kafka.truststore.pem\nssl.truststore.type=PEM\n' > /tmp/hc.properties && KAFKA_OPTS="" kafka-broker-api-versions.sh --bootstrap-server kafka-2:9092 --command-config /tmp/hc.properties > /dev/null 2>&1
       start_period: 30s
       interval: 10s
       retries: 3
@@ -231,7 +252,11 @@ services:
     ports:
       # Хост-порт 9094 → контейнер-порт 9092 (SASL_SSL)
       - "9094:9092"
+      # 9103 — JMX Prometheus Exporter для kafka-3
+      - "9103:9103"
     environment:
+      # JMX Exporter для kafka-3 (порт 9103)
+      KAFKA_OPTS: "-javaagent:/opt/jmx/jmx_prometheus_javaagent.jar=9103:/opt/jmx/kafka-jmx-exporter.yml"
       KAFKA_CFG_PROCESS_ROLES: broker,controller
       # Уникальный ID: 3
       KAFKA_CFG_NODE_ID: 3
@@ -261,12 +286,14 @@ services:
       - ../ssl/certs/kafka-3.chain.crt:/bitnami/kafka/config/certs/kafka.keystore.pem:ro
       - ../ssl/certs/kafka-3.key:/bitnami/kafka/config/certs/kafka.keystore.key:ro
       - ../ssl/certs/ca.crt:/bitnami/kafka/config/certs/kafka.truststore.pem:ro
+      # JMX Exporter
+      - ./jmx:/opt/jmx:ro
     healthcheck:
       # kafka-3:9092 — сертификат выпущен для kafka-3, localhost не подойдёт
       test:
         - "CMD-SHELL"
         - >-
-          printf 'security.protocol=SASL_SSL\nsasl.mechanism=SCRAM-SHA-512\nsasl.jaas.config=org.apache.kafka.common.security.scram.ScramLoginModule required username=\"admin\" password=\"AdminPass1\";\nssl.truststore.location=/bitnami/kafka/config/certs/kafka.truststore.pem\nssl.truststore.type=PEM\n' > /tmp/hc.properties && kafka-broker-api-versions.sh --bootstrap-server kafka-3:9092 --command-config /tmp/hc.properties > /dev/null 2>&1
+          printf 'security.protocol=SASL_SSL\nsasl.mechanism=SCRAM-SHA-512\nsasl.jaas.config=org.apache.kafka.common.security.scram.ScramLoginModule required username=\"admin\" password=\"AdminPass1\";\nssl.truststore.location=/bitnami/kafka/config/certs/kafka.truststore.pem\nssl.truststore.type=PEM\n' > /tmp/hc.properties && KAFKA_OPTS="" kafka-broker-api-versions.sh --bootstrap-server kafka-3:9092 --command-config /tmp/hc.properties > /dev/null 2>&1
       start_period: 30s
       interval: 10s
       retries: 3

@@ -1,0 +1,74 @@
+# docker-compose.yml — Kafka Connect с FileStreamSink коннектором.
+#
+# Kafka Connect читает топик products-filtered из кластера 1 и записывает
+# сообщения в файл /data/products-filtered.jsonl (один JSON на строку).
+#
+# В учебном проекте используется встроенный FileStreamSink — он входит
+# в поставку Kafka и не требует дополнительных плагинов.
+#
+# Зависимости:
+#   - Кластер 1 запущен: step-2-kafka/cluster-1/docker-compose.yml
+#   - Топик products-filtered существует (создан cluster-1/setup.sh)
+#
+# Запуск:
+#   docker compose up -d
+#   # Через ~30 секунд файл должен появиться внутри контейнера:
+#   docker exec kafka-connect cat /data/products-filtered.jsonl
+#
+# Остановка:
+#   docker compose down -v
+
+services:
+  # ── Kafka Connect в distributed mode ────────────────────────────────────────
+
+  kafka-connect:
+    # bitnami/kafka включает kafka-connect в комплекте
+    # Используем ту же версию что и брокеры для гарантированной совместимости
+    image: bitnamilegacy/kafka:3.7
+
+    # Имя контейнера для удобного docker exec
+    container_name: kafka-connect
+
+    # Запускаем Kafka Connect в standalone режиме
+    # Standalone: один воркер, конфиг из файла (проще чем distributed для учёбы)
+    command:
+      # connect-standalone.sh запускает одного воркера
+      - /opt/bitnami/kafka/bin/connect-standalone.sh
+      # Первый аргумент: конфиг воркера (broker, serialization)
+      - /opt/bitnami/kafka/config/connect-worker.properties
+      # Второй аргумент: конфиг коннектора (FileStreamSink)
+      - /opt/bitnami/kafka/config/connect-filesink.properties
+
+    # Монтируем конфигурационные файлы внутрь контейнера
+    volumes:
+      # Конфиги воркера и коннектора (создаём ниже)
+      - ./config/connect-worker.properties:/opt/bitnami/kafka/config/connect-worker.properties:ro
+      - ./config/connect-filesink.properties:/opt/bitnami/kafka/config/connect-filesink.properties:ro
+      # CA сертификат для TLS подключения к кластеру 1
+      - ../../step-2-kafka/ssl/certs/ca.crt:/opt/bitnami/kafka/config/certs/ca.crt:ro
+      # Директория для выходного файла (создаётся docker)
+      - connect-data:/data
+
+    # Подключаемся к сети кластера 1
+    networks:
+      - kafka-net
+
+    # Зависит от кластера 1 (но кластер 1 запускается отдельным compose)
+    # restart: on-failure — переподключается если кластер ещё не готов
+    restart: on-failure
+
+# ── Volumes ───────────────────────────────────────────────────────────────────
+
+volumes:
+  # Именованный том для файлов Kafka Connect
+  # Содержимое сохраняется между перезапусками контейнера
+  connect-data:
+
+# ── Сети ─────────────────────────────────────────────────────────────────────
+
+networks:
+  # Внешняя сеть кластера 1 — брокеры kafka-1, kafka-2, kafka-3
+  kafka-net:
+    external: true
+    # Имя совпадает с name: в cluster-1/docker-compose.yml
+    name: kafka-cluster-net

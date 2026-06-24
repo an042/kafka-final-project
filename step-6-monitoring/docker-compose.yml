@@ -1,0 +1,153 @@
+# docker-compose.yml — стек мониторинга Kafka.
+#
+# Компоненты:
+#   JMX Exporter  — собирает метрики Kafka (JMX → Prometheus формат)
+#   Prometheus     — хранит метрики, оценивает правила алертов
+#   Grafana        — дашборды и визуализация метрик
+#   Alertmanager   — маршрутизация алертов → Telegram
+#
+# Порты (на хост-машине):
+#   9090 — Prometheus UI
+#   3000 — Grafana UI (admin/admin по умолчанию)
+#   9093 — Alertmanager UI
+#
+# Запуск:
+#   docker compose up -d
+#   # Метрики появятся через ~30 сек после старта брокеров
+#   # Grafana: http://localhost:3000 (admin/admin)
+#   # Prometheus: http://localhost:9090
+#
+# Зависимости:
+#   - Кластер 1 запущен (kafka-1, kafka-2, kafka-3 в сети kafka-cluster-net)
+#   - В docker-compose кластера 1 должен быть JMX_PORT=9101 для каждого брокера
+#
+# Примечание: JMX Exporter запускается как Java-агент внутри брокеров,
+# здесь мы подключаемся к уже открытым портам 9101/9102/9103.
+
+services:
+  # ── Prometheus — сбор и хранение метрик ─────────────────────────────────────
+
+  prometheus:
+    # prom/prometheus — официальный образ Prometheus
+    image: prom/prometheus:v2.54.1
+    container_name: prometheus
+
+    # Путь к конфигурационному файлу внутри контейнера
+    command:
+      # Файл конфигурации с targets и правилами алертов
+      - --config.file=/etc/prometheus/prometheus.yml
+      # Хранить метрики 15 дней (достаточно для учебного проекта)
+      - --storage.tsdb.retention.time=15d
+      # Разрешить веб-интерфейс (для ручного просмотра)
+      - --web.enable-lifecycle
+
+    volumes:
+      # Конфиг Prometheus (targets, scrape intervals, alert rules)
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      # Файл с правилами алертов
+      - ./prometheus/alert.rules.yml:/etc/prometheus/alert.rules.yml:ro
+      # Том для хранения метрик (персистентный)
+      - prometheus-data:/prometheus
+
+    ports:
+      # 9090 — веб-интерфейс Prometheus (http://localhost:9090)
+      - "9090:9090"
+
+    networks:
+      # Сеть мониторинга для связи с Grafana и Alertmanager
+      - monitoring-net
+      # Сеть кластера 1 для сбора метрик с брокеров
+      - kafka-net
+
+    # Автоматический перезапуск при ошибке
+    restart: unless-stopped
+
+  # ── Grafana — дашборды ────────────────────────────────────────────────────────
+
+  grafana:
+    # grafana/grafana-oss — открытая версия Grafana
+    image: grafana/grafana-oss:11.2.0
+    container_name: grafana
+
+    volumes:
+      # Настройки Grafana: datasources, дашборды (provisioning)
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      # JSON дашборды (автоматически загружаются при старте)
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+      # Том для хранения настроек пользователей (персистентный)
+      - grafana-data:/var/lib/grafana
+
+    ports:
+      # 3000 — веб-интерфейс Grafana (http://localhost:3000)
+      - "3000:3000"
+
+    environment:
+      # Логин администратора (по умолчанию admin/admin)
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      # Отключаем требование смены пароля при первом входе
+      - GF_SECURITY_DISABLE_INITIAL_ADMIN_PASSWORD_CHANGE=true
+      # Анонимный доступ отключён (нужна аутентификация)
+      - GF_AUTH_ANONYMOUS_ENABLED=false
+
+    networks:
+      # Только сеть мониторинга (Grafana запрашивает метрики у Prometheus)
+      - monitoring-net
+
+    # Зависит от Prometheus — дашборды не загрузятся без данных
+    depends_on:
+      - prometheus
+
+    restart: unless-stopped
+
+  # ── Alertmanager — маршрутизация алертов ─────────────────────────────────────
+
+  alertmanager:
+    # prom/alertmanager — официальный образ
+    image: prom/alertmanager:v0.27.0
+    container_name: alertmanager
+
+    command:
+      # Файл конфигурации маршрутов и получателей
+      - --config.file=/etc/alertmanager/alertmanager.yml
+      # Хранить состояние алертов (silences, notification log)
+      - --storage.path=/alertmanager
+      # Отключаем gossip-кластеризацию (нужна только при нескольких экземплярах)
+      - --cluster.listen-address=
+
+    volumes:
+      # Конфиг: маршруты алертов → Telegram
+      - ./alertmanager/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+      # Том для хранения состояния
+      - alertmanager-data:/alertmanager
+
+    ports:
+      # 9188 — веб-интерфейс Alertmanager (9093 занят kafka-2)
+      - "9188:9093"
+
+    networks:
+      - monitoring-net
+
+    restart: unless-stopped
+
+# ── Volumes ───────────────────────────────────────────────────────────────────
+
+volumes:
+  # Хранение метрик Prometheus (15 дней)
+  prometheus-data:
+  # Настройки и дашборды Grafana
+  grafana-data:
+  # Состояние алертов Alertmanager (silences)
+  alertmanager-data:
+
+# ── Сети ─────────────────────────────────────────────────────────────────────
+
+networks:
+  # Внутренняя сеть мониторинга (Prometheus ↔ Grafana ↔ Alertmanager)
+  monitoring-net:
+    driver: bridge
+
+  # Внешняя сеть кластера 1 — для сбора JMX метрик с брокеров
+  kafka-net:
+    external: true
+    name: kafka-cluster-net

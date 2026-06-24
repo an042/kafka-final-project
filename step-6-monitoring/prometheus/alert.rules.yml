@@ -1,0 +1,106 @@
+# alert.rules.yml — правила алертов для Kafka кластера.
+#
+# Prometheus оценивает эти правила каждые evaluation_interval секунд (15s).
+# Если условие (expr) истинно в течение for-периода — алерт "выстреливает"
+# и отправляется в Alertmanager → Telegram.
+#
+# Severity уровни:
+#   critical — критическая ошибка, требует немедленного внимания (офлайн брокер)
+#   warning  — предупреждение, можно проверить в ближайшее время
+
+groups:
+  # ── Группа алертов Kafka ───────────────────────────────────────────────────────
+
+  - name: kafka-alerts
+    # Интервал оценки правил в этой группе (переопределяет глобальный)
+    interval: 30s
+
+    rules:
+
+      # ── 1. Брокер недоступен ──────────────────────────────────────────────────
+
+      - alert: KafkaBrokerDown
+        # up == 0: Prometheus не смог получить метрики с брокера (JMX Exporter недоступен)
+        # job="kafka": только наши брокеры (не Prometheus, не Alertmanager)
+        expr: up{job="kafka"} == 0
+        # Алерт "выстреливает" если условие истинно 1 минуту (не флуктуация сети)
+        for: 1m
+        labels:
+          # severity передаётся в Alertmanager для маршрутизации
+          severity: critical
+        annotations:
+          # summary — короткое описание (одна строка, для Telegram уведомления)
+          # {{$labels.broker}} — имя брокера из relabel_configs в prometheus.yml
+          summary: "Kafka брокер {{ $labels.broker }} недоступен"
+          # description — детальное описание с инструкцией
+          description: "Брокер {{ $labels.broker }} (cluster={{ $labels.cluster }}) не отвечает более 1 минуты. Проверьте: docker logs {{ $labels.broker }}"
+
+      # ── 2. Отставание consumer group ─────────────────────────────────────────
+
+      - alert: KafkaConsumerGroupLag
+        # kafka_consumer_group_lag — метрика JMX Exporter
+        # sum by(group, topic) — суммируем по партициям для каждой группы/топика
+        # > 1000: отставание более 1000 сообщений
+        expr: sum by(group, topic) (kafka_consumer_group_lag{job="kafka"}) > 1000
+        # Алерт если отставание держится 5 минут (не пик нагрузки)
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Consumer group {{ $labels.group }} отстаёт в топике {{ $labels.topic }}"
+          description: "Отставание: {{ $value }} сообщений. Consumer группа {{ $labels.group }} не успевает обрабатывать сообщения из {{ $labels.topic }}. Проверьте stream-processor."
+
+      # ── 3. Под-реплицированные партиции ──────────────────────────────────────
+
+      - alert: KafkaUnderReplicatedPartitions
+        # kafka_server_replicamanager_underreplicatedpartitions — метрика JMX
+        # > 0: есть партиции у которых нет полного набора реплик ISR
+        expr: kafka_server_replicamanager_underreplicatedpartitions{job="kafka"} > 0
+        # Сразу алертим — под-репликация критична для надёжности
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Под-реплицированные партиции на {{ $labels.broker }}"
+          description: "{{ $value }} партиций не имеют полного набора реплик на брокере {{ $labels.broker }}. Это снижает надёжность (при отказе брокера данные могут быть потеряны)."
+
+      # ── 4. Активный контроллер ────────────────────────────────────────────────
+
+      - alert: KafkaNoActiveController
+        # kafka_controller_kafkacontroller_activecontrollercount — должен быть ровно 1
+        # sum() — суммируем по всем брокерам (только один имеет контроллер)
+        expr: sum(kafka_controller_kafkacontroller_activecontrollercount{job="kafka"}) != 1
+        # Если нет контроллера — кластер не работает, алерт немедленно
+        for: 30s
+        labels:
+          severity: critical
+        annotations:
+          summary: "Kafka: нет активного контроллера"
+          description: "Активных контроллеров: {{ $value }} (должен быть ровно 1). Кластер не может обрабатывать metadata запросы. Проверьте KRaft quorum: docker logs kafka-1"
+
+      # ── 5. Высокое использование диска ───────────────────────────────────────
+
+      - alert: KafkaDiskUsageHigh
+        # kafka_log_log_size — объём данных в логах Kafka (байты)
+        # Считаем суммарный объём по всем топикам/партициям на брокере
+        # > 10GB (10 * 1024^3)
+        expr: sum by(broker) (kafka_log_log_size{job="kafka"}) > 10737418240
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Kafka: высокое использование диска на {{ $labels.broker }}"
+          description: "Брокер {{ $labels.broker }} использует {{ $value | humanize }}B дискового пространства. Рассмотрите уменьшение retention.ms или увеличение диска."
+
+      # ── 6. Stream Processor остановлен ───────────────────────────────────────
+
+      - alert: StreamProcessorDown
+        # Если consumer group "stream-processor" перестала читать из products-raw —
+        # её lag начнёт расти. Алерт при lag > 100 в течение 2 минут.
+        expr: sum by(group) (kafka_consumer_group_lag{job="kafka", group="stream-processor", topic="products-raw"}) > 100
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Stream Processor остановлен или отстаёт"
+          description: "Consumer group stream-processor отстаёт на {{ $value }} сообщений в топике products-raw. Проверьте: cd step-4-stream-processor && go run ."

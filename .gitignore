@@ -1,5 +1,12 @@
+# TLS — приватные ключи и сертификаты (генерируются через ssl/generate-certs.sh)
+**/ssl/certs/
+
+# Java keystores (устаревший формат — в проекте используем PEM)
 *.p12
 *.jks
-ssl/certs/
-.env
 
+# JMX Prometheus Exporter jar (скачать через jmx/download-agent.sh)
+**/jmx/jmx_prometheus_javaagent.jar
+
+# Секреты
+.env
