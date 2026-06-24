@@ -1,0 +1,120 @@
+# docker-compose.yml — Kafka кластер 2 (зеркало для аналитики)
+#
+# Назначение:
+#   Получает копию данных из кластера 1 через MirrorMaker 2.
+#   На этом кластере работают аналитические задачи (HDFS consumer, Spark, ksqlDB).
+#   Spark пишет рекомендации в топик recommendations — их читает CLIENT API.
+#
+# Почему 1 брокер (а не 3):
+#   Кластер 2 — аналитическая зона, не транзакционная.
+#   Падение одного брокера не критично — данные восстановятся из кластера 1 через MirrorMaker.
+#   1 брокер проще в учебном контексте и экономит ресурсы.
+#
+# Топики:
+#   cluster1.products-raw       — зеркало из кластера 1 (MirrorMaker добавляет prefix "cluster1.")
+#   cluster1.products-filtered  — зеркало
+#   cluster1.client-events      — зеркало
+#   recommendations             — создаётся Spark-джобом (Шаг 3)
+#
+# Сеть:
+#   Подключается к той же сети kafka-cluster-net, что и кластер 1
+#   Это нужно для MirrorMaker — он в той же сети и видит оба кластера
+
+version: "3.8"
+
+networks:
+  kafka-net:
+    # external: true — сеть создана в cluster-1/docker-compose.yml, мы к ней подключаемся
+    external: true
+    # Имя должно совпадать с name: в cluster-1/docker-compose.yml
+    name: kafka-cluster-net
+
+services:
+  # ─── Единственный брокер кластера 2 ─────────────────────────────────────────
+  kafka-analytics:
+    image: bitnami/kafka:3.9
+    container_name: kafka-analytics
+    networks:
+      - kafka-net
+    ports:
+      # Хост-порт 9095 → контейнер 9092 (не конфликтует с кластером 1: 9092-9094)
+      - "9095:9092"
+    environment:
+      # ── KRaft ─────────────────────────────────────────────────────────────
+      # Один узел — одновременно брокер и единственный контроллер
+      KAFKA_CFG_PROCESS_ROLES: broker,controller
+
+      # ID=1 — нет конфликта, это другой кластер с другим KRAFT_CLUSTER_ID
+      KAFKA_CFG_NODE_ID: 1
+
+      # Кворум из одного узла — сам с собой
+      KAFKA_CFG_CONTROLLER_QUORUM_VOTERS: 1@kafka-analytics:9093
+
+      # Другой Cluster ID — это отдельный кластер, не расширение кластера 1
+      # Иначе KRaft перепутает метаданные двух кластеров
+      KAFKA_KRAFT_CLUSTER_ID: QW5hbHl0aWNzQ2x1c3Rlcg
+
+      # ── Listeners ─────────────────────────────────────────────────────────
+      KAFKA_CFG_LISTENERS: SASL_SSL://:9092,CONTROLLER://:9093
+      # kafka-analytics — Docker hostname этого контейнера
+      KAFKA_CFG_ADVERTISED_LISTENERS: SASL_SSL://kafka-analytics:9092
+      KAFKA_CFG_LISTENER_SECURITY_PROTOCOL_MAP: SASL_SSL:SASL_SSL,CONTROLLER:PLAINTEXT
+      KAFKA_CFG_INTER_BROKER_LISTENER_NAME: SASL_SSL
+      KAFKA_CFG_CONTROLLER_LISTENER_NAMES: CONTROLLER
+
+      # ── SASL ──────────────────────────────────────────────────────────────
+      KAFKA_CFG_SASL_ENABLED_MECHANISMS: SCRAM-SHA-512
+      KAFKA_CFG_SASL_MECHANISM_INTER_BROKER_PROTOCOL: SCRAM-SHA-512
+      # Один узел — межброкерная аутентификация формальная, но нужна для конфигурации
+      KAFKA_INTER_BROKER_USER: interbroker
+      KAFKA_INTER_BROKER_PASSWORD: InterBrokerPass1
+
+      # ── Пользователи ──────────────────────────────────────────────────────
+      # mirrormaker — пишет зеркалированные данные из кластера 1
+      # analytics   — читает данные для HDFS/Spark (Шаг 3)
+      # spark       — пишет рекомендации (Шаг 3)
+      # client-api  — читает рекомендации для ответа пользователю (Шаг 1)
+      KAFKA_CLIENT_USERS: admin,mirrormaker,analytics,spark,client-api,kafka-connect
+      KAFKA_CLIENT_PASSWORDS: AdminPass1,MirrorPass1,AnalyticsPass1,SparkPass1,ClientApiPass1,ConnectPass1
+
+      # ── TLS ───────────────────────────────────────────────────────────────
+      # Используем те же сертификаты (от того же CA) — у нас один CA на всё
+      KAFKA_TLS_TYPE: JKS
+      KAFKA_CFG_SSL_KEYSTORE_LOCATION: /bitnami/kafka/config/certs/kafka.keystore.jks
+      KAFKA_CFG_SSL_KEYSTORE_PASSWORD: TrustPass1
+      KAFKA_CFG_SSL_KEY_PASSWORD: TrustPass1
+      KAFKA_CFG_SSL_TRUSTSTORE_LOCATION: /bitnami/kafka/config/certs/kafka.truststore.jks
+      KAFKA_CFG_SSL_TRUSTSTORE_PASSWORD: TrustPass1
+
+      # ── ACL ───────────────────────────────────────────────────────────────
+      KAFKA_CFG_AUTHORIZER_CLASS_NAME: org.apache.kafka.metadata.authorizer.StandardAuthorizer
+      KAFKA_CFG_ALLOW_EVERYONE_IF_NO_ACL_FOUND: "false"
+      KAFKA_CFG_SUPER_USERS: "User:admin;User:interbroker;User:mirrormaker"
+
+      # ── Репликация ────────────────────────────────────────────────────────
+      # RF=1 — один брокер, больше нельзя
+      KAFKA_CFG_DEFAULT_REPLICATION_FACTOR: 1
+      # min.insync = 1, иначе producer будет зависать (некому синхронизироваться)
+      KAFKA_CFG_MIN_INSYNC_REPLICAS: 1
+      # 3 партиции — чтобы Spark мог параллельно обрабатывать данные
+      KAFKA_CFG_NUM_PARTITIONS: 3
+
+    volumes:
+      - kafka-analytics-data:/bitnami/kafka
+      # Сертификат для analytics-брокера
+      - ../ssl/certs/kafka-analytics.keystore.jks:/bitnami/kafka/config/certs/kafka.keystore.jks:ro
+      - ../ssl/certs/kafka.truststore.jks:/bitnami/kafka/config/certs/kafka.truststore.jks:ro
+
+    healthcheck:
+      # Тот же подход что и в cluster-1 — пишем properties inline через printf
+      test:
+        - "CMD-SHELL"
+        - >-
+          printf 'security.protocol=SASL_SSL\nsasl.mechanism=SCRAM-SHA-512\nsasl.jaas.config=org.apache.kafka.common.security.scram.ScramLoginModule required username=\"admin\" password=\"AdminPass1\";\nssl.truststore.location=/bitnami/kafka/config/certs/kafka.truststore.jks\nssl.truststore.password=TrustPass1\nssl.truststore.type=JKS\n' > /tmp/hc.properties && kafka-broker-api-versions.sh --bootstrap-server localhost:9092 --command-config /tmp/hc.properties > /dev/null 2>&1
+      start_period: 30s
+      interval: 10s
+      retries: 3
+
+volumes:
+  # Данные кластера аналитики
+  kafka-analytics-data:

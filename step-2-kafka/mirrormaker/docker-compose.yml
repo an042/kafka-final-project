@@ -1,0 +1,61 @@
+# docker-compose.yml — MirrorMaker 2
+#
+# MirrorMaker 2 реплицирует топики из кластера 1 в кластер 2.
+# Читает из kafka-1/2/3 (кластер 1), пишет в kafka-analytics (кластер 2).
+#
+# MirrorMaker 2 — это Kafka Connect worker со встроенными коннекторами.
+# Запускается командой connect-mirror-maker.sh с конфигом mm2.properties.
+#
+# Образ: тот же bitnami/kafka:3.9 — MM2 входит в поставку Kafka,
+# отдельный образ не нужен. Просто запускаем нужный скрипт из образа.
+#
+# Предварительные условия:
+#   Кластер 1 запущен: cd ../cluster-1 && docker compose up -d
+#   Кластер 2 запущен: cd ../cluster-2 && docker compose up -d
+#   Сертификаты сгенерированы: bash ../ssl/generate-certs.sh
+
+version: "3.8"
+
+networks:
+  kafka-net:
+    # Та же внешняя сеть — видим оба кластера
+    external: true
+    name: kafka-cluster-net
+
+services:
+  mirrormaker:
+    image: bitnami/kafka:3.9
+    container_name: mirrormaker
+    networks:
+      - kafka-net
+
+    # Переопределяем команду запуска — вместо брокера запускаем MM2
+    # /opt/bitnami/kafka/bin/ — стандартное место бинарников в bitnami образе
+    command: /opt/bitnami/kafka/bin/connect-mirror-maker.sh /opt/bitnami/kafka/config/mm2.properties
+
+    environment:
+      # KAFKA_OPTS — JVM-параметры для всех Kafka-процессов
+      # Здесь передаём логгер, чтобы MM2 не засорял вывод warning'ами о log4j
+      KAFKA_OPTS: "-Dlog4j.configuration=file:/opt/bitnami/kafka/config/log4j.properties"
+
+    volumes:
+      # Конфиг репликации — монтируем mm2.properties
+      - ./mm2.properties:/opt/bitnami/kafka/config/mm2.properties:ro
+      # Общий truststore для TLS — нужен и для кластера 1, и для кластера 2
+      - ../ssl/certs/kafka.truststore.jks:/etc/kafka/certs/kafka.truststore.jks:ro
+
+    # MM2 не должен стартовать раньше, чем поднимутся оба кластера
+    # Docker Compose не может ждать "готовности" внешних сервисов из другого compose-файла,
+    # поэтому добавляем restart: on-failure — при неудаче перезапускается автоматически
+    restart: on-failure
+
+    # Ограничиваем количество перезапусков — после 5 падений стопорим
+    # чтобы не замусоривать логи бесконечными retry
+    deploy:
+      restart_policy:
+        # on-failure — перезапускать только при ненулевом exit code
+        condition: on-failure
+        # Ждать 5 секунд перед перезапуском
+        delay: 5s
+        # Максимум 10 попыток
+        max_attempts: 10
