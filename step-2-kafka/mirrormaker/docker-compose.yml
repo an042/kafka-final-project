@@ -24,7 +24,7 @@ networks:
 
 services:
   mirrormaker:
-    image: bitnami/kafka:3.9
+    image: bitnamilegacy/kafka:3.7
     container_name: mirrormaker
     networks:
       - kafka-net
@@ -41,8 +41,8 @@ services:
     volumes:
       # Конфиг репликации — монтируем mm2.properties
       - ./mm2.properties:/opt/bitnami/kafka/config/mm2.properties:ro
-      # Общий truststore для TLS — нужен и для кластера 1, и для кластера 2
-      - ../ssl/certs/kafka.truststore.jks:/etc/kafka/certs/kafka.truststore.jks:ro
+      # CA сертификат как truststore (PEM) — используется для обоих кластеров
+      - ../ssl/certs/ca.crt:/etc/kafka/certs/kafka.truststore.pem:ro
 
     # MM2 не должен стартовать раньше, чем поднимутся оба кластера
     # Docker Compose не может ждать "готовности" внешних сервисов из другого compose-файла,

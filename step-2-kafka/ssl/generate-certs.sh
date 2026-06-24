@@ -1,32 +1,34 @@
 #!/bin/bash
 # generate-certs.sh — генерирует TLS-сертификаты для Kafka кластера.
 #
-# Что создаётся:
-#   ca.key + ca.crt          — корневой CA (Certificate Authority)
-#   kafka-N.keystore.jks     — keystore каждого брокера (приватный ключ + сертификат)
-#   kafka.truststore.jks     — truststore (содержит ca.crt, используется всеми)
+# Формат: PEM (не JKS)
+# Почему PEM вместо JKS:
+#   keytool требует Java Runtime на хосте — дополнительная зависимость.
+#   bitnami/kafka поддерживает KAFKA_TLS_TYPE=PEM напрямую через переменные окружения.
+#   openssl есть на macOS без дополнительной установки.
 #
-# Почему JKS, а не PKCS12:
-#   bitnami/kafka по умолчанию ожидает JKS для SSL.
-#   В PW7 мы использовали PKCS12 для NiFi/Java — там был trustedCertEntry.
-#   Здесь оба формата работают, но JKS — стандарт для Kafka-брокеров.
+# Что создаётся в ssl/certs/:
+#   ca.key, ca.crt                — корневой CA
+#   kafka-N.key, kafka-N.crt     — ключ + сертификат каждого брокера (подписан CA)
+#
+# Как это работает с bitnami/kafka (KAFKA_TLS_TYPE=PEM):
+#   KAFKA_CFG_SSL_KEYSTORE_KEY                  = kafka-N.key (приватный ключ)
+#   KAFKA_CFG_SSL_KEYSTORE_CERTIFICATE_CHAIN    = kafka-N.crt + ca.crt (cert chain)
+#   KAFKA_CFG_SSL_TRUSTSTORE_CERTIFICATES       = ca.crt (клиенты проверяют брокер через CA)
 #
 # Запуск: bash generate-certs.sh
-# Результат: папка ssl/certs/ со всеми файлами
+# Результат: ssl/certs/ со всеми файлами
 
-# Прерываемся при любой ошибке, чтобы не получить частично созданные сертификаты
+# Прерываемся при любой ошибке
 set -e
 
-# Директория, куда кладём результаты (рядом с этим скриптом)
+# Директория рядом со скриптом
 CERTS_DIR="$(dirname "$0")/certs"
 
-# Пароль для всех keystore/truststore (одинаковый для простоты в учебном проекте)
-PASS="TrustPass1"
-
-# Срок действия сертификатов — 365 дней
+# Срок действия 365 дней
 VALIDITY=365
 
-# Брокеры, для которых генерируем сертификаты
+# Брокеры обоих кластеров
 # kafka-analytics — единственный брокер кластера 2
 BROKERS="kafka-1 kafka-2 kafka-3 kafka-analytics"
 
@@ -34,20 +36,19 @@ echo "==> Создаём директорию $CERTS_DIR"
 mkdir -p "$CERTS_DIR"
 
 # ─── 1. Корневой CA ────────────────────────────────────────────────────────────
-# CA — это «доверенный центр», которому доверяют все участники.
-# Брокеры предъявляют сертификаты, подписанные этим CA.
-# Клиенты проверяют через truststore, что сертификат брокера подписан нашим CA.
+# CA — самоподписанный, ему доверяют все брокеры и клиенты.
+# ca.crt монтируется в каждый контейнер как "truststore" (список доверенных CA).
 
 echo ""
 echo "==> Шаг 1: Генерируем корневой CA"
 
-# Создаём приватный ключ CA (2048 бит RSA)
+# Генерируем приватный ключ CA (2048 бит RSA — достаточно для учебного проекта)
 openssl genrsa -out "$CERTS_DIR/ca.key" 2048
 
-# Создаём самоподписанный сертификат CA на основе ключа
-# -x509    — формат сертификата X.509
-# -new     — новый запрос на сертификат
-# -days    — срок действия
+# Самоподписанный сертификат CA
+# -x509    — формат X.509 (стандарт TLS сертификатов)
+# -new     — создаём новый
+# -nodes   — приватный ключ без passphrase (удобно для автоматизации)
 # -subj    — subject без интерактивного ввода
 openssl req -x509 -new -nodes \
   -key "$CERTS_DIR/ca.key" \
@@ -55,64 +56,39 @@ openssl req -x509 -new -nodes \
   -out "$CERTS_DIR/ca.crt" \
   -subj "/CN=KafkaCA/OU=kafka/O=practicum/L=Moscow/C=RU"
 
-echo "    CA создан: ca.key + ca.crt"
+echo "    ОК: ca.key + ca.crt"
 
-# ─── 2. Truststore ────────────────────────────────────────────────────────────
-# Truststore — хранилище доверенных сертификатов.
-# Все брокеры и клиенты используют один и тот же truststore: он содержит ca.crt.
-# Когда брокер получает соединение, он проверяет сертификат клиента/другого брокера
-# через truststore — подписан ли он нашим CA?
-
-echo ""
-echo "==> Шаг 2: Создаём общий truststore"
-
-# Импортируем CA-сертификат в truststore
-# -importcert  — добавить сертификат
-# -alias       — имя записи в хранилище
-# -noprompt    — не спрашивать подтверждение
-# -trustcacerts — пометить как доверенный CA
-keytool -importcert \
-  -alias ca-cert \
-  -file "$CERTS_DIR/ca.crt" \
-  -keystore "$CERTS_DIR/kafka.truststore.jks" \
-  -storepass "$PASS" \
-  -noprompt \
-  -trustcacerts
-
-echo "    Truststore создан: kafka.truststore.jks"
-
-# ─── 3. Keystore для каждого брокера ──────────────────────────────────────────
-# Keystore — личное хранилище брокера: приватный ключ + сертификат.
-# Сертификат подписан нашим CA, поэтому другие участники ему доверяют.
-# CN (Common Name) = имя хоста брокера (например, kafka-1).
-# Это важно: при подключении клиент проверяет, что CN совпадает с хостом.
+# ─── 2. Сертификаты брокеров ──────────────────────────────────────────────────
+# Для каждого брокера:
+#   1. Генерируем приватный ключ
+#   2. Создаём CSR (Certificate Signing Request) — запрос на подпись
+#   3. Подписываем CSR нашим CA — получаем сертификат
+#
+# CN = Docker hostname брокера (kafka-1, kafka-2, etc.)
+# Клиент при TLS-рукопожатии проверяет что CN совпадает с хостом — это обязательно.
+# Альтернатива: SAN (Subject Alternative Names) — более современный подход,
+# но для учебного проекта CN достаточно.
 
 echo ""
-echo "==> Шаг 3: Генерируем keystore для каждого брокера"
+echo "==> Шаг 2: Генерируем ключи и сертификаты брокеров"
 
 for BROKER in $BROKERS; do
   echo "    Обрабатываем $BROKER..."
 
-  # Генерируем приватный ключ и самоподписанный сертификат для брокера
-  # Помещаем сразу в keystore (keytool genkeypair делает это за один шаг)
-  keytool -genkeypair \
-    -alias "$BROKER" \
-    -keyalg RSA \
-    -keysize 2048 \
-    -validity "$VALIDITY" \
-    -keystore "$CERTS_DIR/$BROKER.keystore.jks" \
-    -storepass "$PASS" \
-    -keypass "$PASS" \
-    -dname "CN=$BROKER,OU=kafka,O=practicum,L=Moscow,C=RU"
+  # Приватный ключ брокера
+  openssl genrsa -out "$CERTS_DIR/$BROKER.key" 2048
 
-  # Экспортируем CSR (Certificate Signing Request) — запрос на подпись нашим CA
-  keytool -certreq \
-    -alias "$BROKER" \
-    -keystore "$CERTS_DIR/$BROKER.keystore.jks" \
-    -storepass "$PASS" \
-    -file "$CERTS_DIR/$BROKER.csr"
+  # CSR (Certificate Signing Request): содержит публичный ключ и CN брокера
+  # -new     — создаём новый CSR
+  # -key     — на основе приватного ключа
+  # -subj    — CN = Docker hostname брокера (важно для проверки TLS!)
+  openssl req -new \
+    -key "$CERTS_DIR/$BROKER.key" \
+    -out "$CERTS_DIR/$BROKER.csr" \
+    -subj "/CN=$BROKER/OU=kafka/O=practicum/L=Moscow/C=RU"
 
   # Подписываем CSR нашим CA → получаем подписанный сертификат брокера
+  # -CAcreateserial — автоматически создаёт файл серийных номеров (ca.srl)
   openssl x509 -req \
     -CA "$CERTS_DIR/ca.crt" \
     -CAkey "$CERTS_DIR/ca.key" \
@@ -121,32 +97,27 @@ for BROKER in $BROKERS; do
     -days "$VALIDITY" \
     -out "$CERTS_DIR/$BROKER.crt"
 
-  # Сначала импортируем CA в keystore брокера (цепочка доверия)
-  keytool -importcert \
-    -alias ca-cert \
-    -file "$CERTS_DIR/ca.crt" \
-    -keystore "$CERTS_DIR/$BROKER.keystore.jks" \
-    -storepass "$PASS" \
-    -noprompt \
-    -trustcacerts
-
-  # Затем импортируем подписанный сертификат брокера (заменяет самоподписанный)
-  keytool -importcert \
-    -alias "$BROKER" \
-    -file "$CERTS_DIR/$BROKER.crt" \
-    -keystore "$CERTS_DIR/$BROKER.keystore.jks" \
-    -storepass "$PASS" \
-    -noprompt
-
-  # CSR больше не нужен — удаляем
+  # CSR больше не нужен после подписи
   rm "$CERTS_DIR/$BROKER.csr"
 
-  echo "    $BROKER.keystore.jks создан"
+  # bitnami/kafka с KAFKA_TLS_TYPE=PEM ожидает certificate chain:
+  # сначала сертификат брокера, затем CA сертификат (цепочка)
+  # Создаём объединённый файл kafka-N.chain.crt
+  cat "$CERTS_DIR/$BROKER.crt" "$CERTS_DIR/ca.crt" > "$CERTS_DIR/$BROKER.chain.crt"
+
+  echo "      ОК: $BROKER.key + $BROKER.crt + $BROKER.chain.crt"
 done
+
+# Удаляем временный файл серийных номеров openssl
+rm -f "$CERTS_DIR/ca.srl"
 
 echo ""
 echo "==> Готово! Содержимое $CERTS_DIR:"
 ls -1 "$CERTS_DIR"
 echo ""
-echo "Пароль для всех хранилищ: $PASS"
-echo "Не забудь добавить certs/ в .gitignore — там приватные ключи!"
+echo "Файлы для монтирования в docker-compose:"
+echo "  Broker key:   \$BROKER.key"
+echo "  Cert chain:   \$BROKER.chain.crt (broker cert + CA cert)"
+echo "  Truststore:   ca.crt (общий для всех)"
+echo ""
+echo "ВАЖНО: директория ssl/certs/ в .gitignore — не коммитить приватные ключи!"

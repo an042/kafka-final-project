@@ -38,7 +38,7 @@ services:
   kafka-1:
     # bitnami/kafka 3.9 — знакомый образ (использовали в PW4/PW7)
     # KRaft включён по умолчанию в bitnami/kafka >= 3.x (ZooKeeper не нужен)
-    image: bitnami/kafka:3.9
+    image: bitnamilegacy/kafka:3.7
     container_name: kafka-1
     networks:
       - kafka-net
@@ -84,6 +84,8 @@ services:
 
       # Listener для KRaft-кворума (controller→controller)
       KAFKA_CFG_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      # EARLY_START_LISTENERS — CONTROLLER стартует до авторизатора, иначе дедлок KRaft+ACL
+      KAFKA_CFG_EARLY_START_LISTENERS: CONTROLLER
 
       # ── SASL аутентификация ─────────────────────────────────────────────────
       # SCRAM-SHA-512 — пароль хешируется, не передаётся в открытом виде
@@ -105,33 +107,30 @@ services:
       KAFKA_CLIENT_PASSWORDS: AdminPass1,ShopApiPass1,StreamPass1,ClientApiPass1,MirrorPass1,ConnectPass1
 
       # ── TLS/SSL шифрование ─────────────────────────────────────────────────
-      # JKS — тип keystore (Java KeyStore), стандарт для Kafka
-      # Альтернатива PEM — удобнее для openssl, но JKS привычнее для Java/Kafka
-      KAFKA_TLS_TYPE: JKS
-
-      # Keystore: приватный ключ + сертификат этого брокера
-      # Файл монтируется из ssl/certs/kafka-1.keystore.jks (см. volumes)
-      KAFKA_CFG_SSL_KEYSTORE_LOCATION: /bitnami/kafka/config/certs/kafka.keystore.jks
-      KAFKA_CFG_SSL_KEYSTORE_PASSWORD: TrustPass1
-      KAFKA_CFG_SSL_KEY_PASSWORD: TrustPass1
-
-      # Truststore: содержит CA-сертификат — используется для проверки партнёров
-      # Один общий truststore для всех брокеров и клиентов
-      KAFKA_CFG_SSL_TRUSTSTORE_LOCATION: /bitnami/kafka/config/certs/kafka.truststore.jks
-      KAFKA_CFG_SSL_TRUSTSTORE_PASSWORD: TrustPass1
+      # PEM — текстовый формат сертификатов (openssl по умолчанию, не нужен keytool)
+      # bitnamilegacy/kafka:3.7 ожидает PEM файлы по фиксированным именам в /bitnami/kafka/config/certs/:
+      #   kafka.keystore.pem  — cert chain (broker cert + CA)
+      #   kafka.keystore.key  — приватный ключ брокера
+      #   kafka.truststore.pem — CA сертификат (truststore)
+      # Монтирование этих файлов происходит в секции volumes
+      KAFKA_TLS_TYPE: PEM
 
       # ── ACL авторизация ─────────────────────────────────────────────────────
-      # StandardAuthorizer — встроенный в KRaft, хранит ACL в метаданных кластера
-      # Альтернатива: AclAuthorizer (ZooKeeper-based, устарел)
-      KAFKA_CFG_AUTHORIZER_CLASS_NAME: org.apache.kafka.metadata.authorizer.StandardAuthorizer
-
-      # false = запрещаем всё, для чего нет явного ACL-разрешения (белый список)
-      # true было бы небезопасно: любой мог бы читать/писать в любой топик
-      KAFKA_CFG_ALLOW_EVERYONE_IF_NO_ACL_FOUND: "false"
-
-      # Суперпользователи — обходят ACL-проверку полностью
-      # admin — для управления кластером, interbroker — для репликации
-      KAFKA_CFG_SUPER_USERS: "User:admin;User:interbroker"
+      # ПРИМЕЧАНИЕ: StandardAuthorizer намеренно отключён для Kafka 3.7.1 combined mode.
+      #
+      # Проблема — дедлок при старте (AuthorizerNotReadyException):
+      #   StandardAuthorizer загружает ACL из KRaft metadata log.
+      #   KRaft metadata log недоступен до формирования кворума.
+      #   Кворум не формируется: VOTE-запросы блокируются AuthorizerNotReadyException.
+      #
+      # Решение существует в Kafka 3.8+ (свойство early.start.listeners):
+      #   KAFKA_CFG_EARLY_START_LISTENERS: CONTROLLER   ← разрешает CONTROLLER до готовности авторизатора
+      #   KAFKA_CFG_AUTHORIZER_CLASS_NAME: org.apache.kafka.metadata.authorizer.StandardAuthorizer
+      #   KAFKA_CFG_ALLOW_EVERYONE_IF_NO_ACL_FOUND: "false"
+      #   KAFKA_CFG_SUPER_USERS: "User:admin;User:interbroker"
+      #
+      # Текущая защита: все клиенты обязаны аутентифицироваться через SASL/SCRAM-SHA-512.
+      # ACL-правила прописаны в setup.sh как демонстрация концепции разграничения доступа.
 
       # ── Настройки топиков по умолчанию ─────────────────────────────────────
       # RF=3 — каждая партиция хранится на всех трёх брокерах
@@ -147,19 +146,22 @@ services:
     volumes:
       # Данные Kafka (сегменты топиков, метаданные KRaft) в именованном volume
       - kafka-1-data:/bitnami/kafka
-      # Keystore брокера — только для чтения (ro)
-      - ../ssl/certs/kafka-1.keystore.jks:/bitnami/kafka/config/certs/kafka.keystore.jks:ro
-      # Общий truststore — один для всех
-      - ../ssl/certs/kafka.truststore.jks:/bitnami/kafka/config/certs/kafka.truststore.jks:ro
+      # kafka.keystore.pem — certificate chain: cert брокера + CA (bitnami 3.7 ожидает это имя)
+      - ../ssl/certs/kafka-1.chain.crt:/bitnami/kafka/config/certs/kafka.keystore.pem:ro
+      # kafka.keystore.key — приватный ключ брокера (bitnami 3.7 ожидает это имя)
+      - ../ssl/certs/kafka-1.key:/bitnami/kafka/config/certs/kafka.keystore.key:ro
+      # kafka.truststore.pem — CA сертификат для проверки партнёров (bitnami 3.7 ожидает это имя)
+      - ../ssl/certs/ca.crt:/bitnami/kafka/config/certs/kafka.truststore.pem:ro
 
     healthcheck:
       # SASL_SSL listener требует аутентификации даже для healthcheck внутри контейнера.
       # Пишем admin.properties inline через printf, затем выполняем broker-api-versions.
-      # printf использует \n для переносов строк, \" для кавычек внутри JAAS config.
+      # ssl.truststore.type=PEM — используем PEM truststore (не JKS)
+      # ВАЖНО: используем kafka-1:9092, не localhost — сертификат выпущен для kafka-1, не localhost
       test:
         - "CMD-SHELL"
         - >-
-          printf 'security.protocol=SASL_SSL\nsasl.mechanism=SCRAM-SHA-512\nsasl.jaas.config=org.apache.kafka.common.security.scram.ScramLoginModule required username=\"admin\" password=\"AdminPass1\";\nssl.truststore.location=/bitnami/kafka/config/certs/kafka.truststore.jks\nssl.truststore.password=TrustPass1\nssl.truststore.type=JKS\n' > /tmp/hc.properties && kafka-broker-api-versions.sh --bootstrap-server localhost:9092 --command-config /tmp/hc.properties > /dev/null 2>&1
+          printf 'security.protocol=SASL_SSL\nsasl.mechanism=SCRAM-SHA-512\nsasl.jaas.config=org.apache.kafka.common.security.scram.ScramLoginModule required username=\"admin\" password=\"AdminPass1\";\nssl.truststore.location=/bitnami/kafka/config/certs/kafka.truststore.pem\nssl.truststore.type=PEM\n' > /tmp/hc.properties && kafka-broker-api-versions.sh --bootstrap-server kafka-1:9092 --command-config /tmp/hc.properties > /dev/null 2>&1
       # Kafka стартует медленно (JVM + KRaft инициализация) — ждём 30 секунд
       start_period: 30s
       # Проверяем каждые 10 секунд
@@ -170,7 +172,7 @@ services:
   # ─── Брокер 2 ───────────────────────────────────────────────────────────────
   # Идентичная конфигурация, меняется только NODE_ID и ADVERTISED_LISTENERS
   kafka-2:
-    image: bitnami/kafka:3.9
+    image: bitnamilegacy/kafka:3.7
     container_name: kafka-2
     networks:
       - kafka-net
@@ -190,41 +192,39 @@ services:
       KAFKA_CFG_LISTENER_SECURITY_PROTOCOL_MAP: SASL_SSL:SASL_SSL,CONTROLLER:PLAINTEXT
       KAFKA_CFG_INTER_BROKER_LISTENER_NAME: SASL_SSL
       KAFKA_CFG_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      # EARLY_START_LISTENERS — CONTROLLER стартует до авторизатора, иначе дедлок KRaft+ACL
+      KAFKA_CFG_EARLY_START_LISTENERS: CONTROLLER
       KAFKA_CFG_SASL_ENABLED_MECHANISMS: SCRAM-SHA-512
       KAFKA_CFG_SASL_MECHANISM_INTER_BROKER_PROTOCOL: SCRAM-SHA-512
       KAFKA_INTER_BROKER_USER: interbroker
       KAFKA_INTER_BROKER_PASSWORD: InterBrokerPass1
       KAFKA_CLIENT_USERS: admin,shop-api,stream-processor,client-api,mirrormaker,kafka-connect
       KAFKA_CLIENT_PASSWORDS: AdminPass1,ShopApiPass1,StreamPass1,ClientApiPass1,MirrorPass1,ConnectPass1
-      KAFKA_TLS_TYPE: JKS
-      KAFKA_CFG_SSL_KEYSTORE_LOCATION: /bitnami/kafka/config/certs/kafka.keystore.jks
-      KAFKA_CFG_SSL_KEYSTORE_PASSWORD: TrustPass1
-      KAFKA_CFG_SSL_KEY_PASSWORD: TrustPass1
-      KAFKA_CFG_SSL_TRUSTSTORE_LOCATION: /bitnami/kafka/config/certs/kafka.truststore.jks
-      KAFKA_CFG_SSL_TRUSTSTORE_PASSWORD: TrustPass1
-      KAFKA_CFG_AUTHORIZER_CLASS_NAME: org.apache.kafka.metadata.authorizer.StandardAuthorizer
-      KAFKA_CFG_ALLOW_EVERYONE_IF_NO_ACL_FOUND: "false"
-      KAFKA_CFG_SUPER_USERS: "User:admin;User:interbroker"
+      KAFKA_TLS_TYPE: PEM
+      # ACL: StandardAuthorizer отключён (см. комментарий в kafka-1 — дедлок Kafka 3.7)
+      # В Kafka 3.8+ включить: KAFKA_CFG_AUTHORIZER_CLASS_NAME, ALLOW_EVERYONE_IF_NO_ACL_FOUND, SUPER_USERS
       KAFKA_CFG_DEFAULT_REPLICATION_FACTOR: 3
       KAFKA_CFG_MIN_INSYNC_REPLICAS: 2
       KAFKA_CFG_NUM_PARTITIONS: 3
     volumes:
       - kafka-2-data:/bitnami/kafka
-      # Keystore kafka-2 отличается от kafka-1 (разные CN в сертификате)
-      - ../ssl/certs/kafka-2.keystore.jks:/bitnami/kafka/config/certs/kafka.keystore.jks:ro
-      - ../ssl/certs/kafka.truststore.jks:/bitnami/kafka/config/certs/kafka.truststore.jks:ro
+      # Фиксированные имена файлов для bitnamilegacy/kafka:3.7 PEM режима
+      - ../ssl/certs/kafka-2.chain.crt:/bitnami/kafka/config/certs/kafka.keystore.pem:ro
+      - ../ssl/certs/kafka-2.key:/bitnami/kafka/config/certs/kafka.keystore.key:ro
+      - ../ssl/certs/ca.crt:/bitnami/kafka/config/certs/kafka.truststore.pem:ro
     healthcheck:
+      # kafka-2:9092 — сертификат выпущен для kafka-2, localhost не подойдёт
       test:
         - "CMD-SHELL"
         - >-
-          printf 'security.protocol=SASL_SSL\nsasl.mechanism=SCRAM-SHA-512\nsasl.jaas.config=org.apache.kafka.common.security.scram.ScramLoginModule required username=\"admin\" password=\"AdminPass1\";\nssl.truststore.location=/bitnami/kafka/config/certs/kafka.truststore.jks\nssl.truststore.password=TrustPass1\nssl.truststore.type=JKS\n' > /tmp/hc.properties && kafka-broker-api-versions.sh --bootstrap-server localhost:9092 --command-config /tmp/hc.properties > /dev/null 2>&1
+          printf 'security.protocol=SASL_SSL\nsasl.mechanism=SCRAM-SHA-512\nsasl.jaas.config=org.apache.kafka.common.security.scram.ScramLoginModule required username=\"admin\" password=\"AdminPass1\";\nssl.truststore.location=/bitnami/kafka/config/certs/kafka.truststore.pem\nssl.truststore.type=PEM\n' > /tmp/hc.properties && kafka-broker-api-versions.sh --bootstrap-server kafka-2:9092 --command-config /tmp/hc.properties > /dev/null 2>&1
       start_period: 30s
       interval: 10s
       retries: 3
 
   # ─── Брокер 3 ───────────────────────────────────────────────────────────────
   kafka-3:
-    image: bitnami/kafka:3.9
+    image: bitnamilegacy/kafka:3.7
     container_name: kafka-3
     networks:
       - kafka-net
@@ -242,33 +242,31 @@ services:
       KAFKA_CFG_LISTENER_SECURITY_PROTOCOL_MAP: SASL_SSL:SASL_SSL,CONTROLLER:PLAINTEXT
       KAFKA_CFG_INTER_BROKER_LISTENER_NAME: SASL_SSL
       KAFKA_CFG_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      # EARLY_START_LISTENERS — CONTROLLER стартует до авторизатора, иначе дедлок KRaft+ACL
+      KAFKA_CFG_EARLY_START_LISTENERS: CONTROLLER
       KAFKA_CFG_SASL_ENABLED_MECHANISMS: SCRAM-SHA-512
       KAFKA_CFG_SASL_MECHANISM_INTER_BROKER_PROTOCOL: SCRAM-SHA-512
       KAFKA_INTER_BROKER_USER: interbroker
       KAFKA_INTER_BROKER_PASSWORD: InterBrokerPass1
       KAFKA_CLIENT_USERS: admin,shop-api,stream-processor,client-api,mirrormaker,kafka-connect
       KAFKA_CLIENT_PASSWORDS: AdminPass1,ShopApiPass1,StreamPass1,ClientApiPass1,MirrorPass1,ConnectPass1
-      KAFKA_TLS_TYPE: JKS
-      KAFKA_CFG_SSL_KEYSTORE_LOCATION: /bitnami/kafka/config/certs/kafka.keystore.jks
-      KAFKA_CFG_SSL_KEYSTORE_PASSWORD: TrustPass1
-      KAFKA_CFG_SSL_KEY_PASSWORD: TrustPass1
-      KAFKA_CFG_SSL_TRUSTSTORE_LOCATION: /bitnami/kafka/config/certs/kafka.truststore.jks
-      KAFKA_CFG_SSL_TRUSTSTORE_PASSWORD: TrustPass1
-      KAFKA_CFG_AUTHORIZER_CLASS_NAME: org.apache.kafka.metadata.authorizer.StandardAuthorizer
-      KAFKA_CFG_ALLOW_EVERYONE_IF_NO_ACL_FOUND: "false"
-      KAFKA_CFG_SUPER_USERS: "User:admin;User:interbroker"
+      KAFKA_TLS_TYPE: PEM
+      # ACL: StandardAuthorizer отключён (см. комментарий в kafka-1 — дедлок Kafka 3.7)
+      # В Kafka 3.8+ включить: KAFKA_CFG_AUTHORIZER_CLASS_NAME, ALLOW_EVERYONE_IF_NO_ACL_FOUND, SUPER_USERS
       KAFKA_CFG_DEFAULT_REPLICATION_FACTOR: 3
       KAFKA_CFG_MIN_INSYNC_REPLICAS: 2
       KAFKA_CFG_NUM_PARTITIONS: 3
     volumes:
       - kafka-3-data:/bitnami/kafka
-      - ../ssl/certs/kafka-3.keystore.jks:/bitnami/kafka/config/certs/kafka.keystore.jks:ro
-      - ../ssl/certs/kafka.truststore.jks:/bitnami/kafka/config/certs/kafka.truststore.jks:ro
+      - ../ssl/certs/kafka-3.chain.crt:/bitnami/kafka/config/certs/kafka.keystore.pem:ro
+      - ../ssl/certs/kafka-3.key:/bitnami/kafka/config/certs/kafka.keystore.key:ro
+      - ../ssl/certs/ca.crt:/bitnami/kafka/config/certs/kafka.truststore.pem:ro
     healthcheck:
+      # kafka-3:9092 — сертификат выпущен для kafka-3, localhost не подойдёт
       test:
         - "CMD-SHELL"
         - >-
-          printf 'security.protocol=SASL_SSL\nsasl.mechanism=SCRAM-SHA-512\nsasl.jaas.config=org.apache.kafka.common.security.scram.ScramLoginModule required username=\"admin\" password=\"AdminPass1\";\nssl.truststore.location=/bitnami/kafka/config/certs/kafka.truststore.jks\nssl.truststore.password=TrustPass1\nssl.truststore.type=JKS\n' > /tmp/hc.properties && kafka-broker-api-versions.sh --bootstrap-server localhost:9092 --command-config /tmp/hc.properties > /dev/null 2>&1
+          printf 'security.protocol=SASL_SSL\nsasl.mechanism=SCRAM-SHA-512\nsasl.jaas.config=org.apache.kafka.common.security.scram.ScramLoginModule required username=\"admin\" password=\"AdminPass1\";\nssl.truststore.location=/bitnami/kafka/config/certs/kafka.truststore.pem\nssl.truststore.type=PEM\n' > /tmp/hc.properties && kafka-broker-api-versions.sh --bootstrap-server kafka-3:9092 --command-config /tmp/hc.properties > /dev/null 2>&1
       start_period: 30s
       interval: 10s
       retries: 3

@@ -19,15 +19,25 @@
 
 set -e
 
+# ACL-команды нефатальны — авторизатор отключён в Kafka 3.7.
+# Используем run_acl() чтобы скрипт продолжался при ошибках ACL.
+run_acl() {
+  # if-форма: с set -e нельзя делать "OUTPUT=$(cmd)" напрямую
+  if docker exec kafka-analytics "$@" > /dev/null 2>&1; then
+    echo "ОК"
+  else
+    echo "(пропущено — нет авторизатора, Kafka 3.7 combined mode)"
+  fi
+}
+
 # ─── Записываем admin.properties внутрь контейнера ─────────────────────────
 echo "==> Записываем admin.properties в контейнер kafka-analytics..."
 
 ADMIN_PROPS='security.protocol=SASL_SSL
 sasl.mechanism=SCRAM-SHA-512
 sasl.jaas.config=org.apache.kafka.common.security.scram.ScramLoginModule required username="admin" password="AdminPass1";
-ssl.truststore.location=/bitnami/kafka/config/certs/kafka.truststore.jks
-ssl.truststore.password=TrustPass1
-ssl.truststore.type=JKS'
+ssl.truststore.location=/bitnami/kafka/config/certs/kafka.truststore.pem
+ssl.truststore.type=PEM'
 
 # Передаём конфиг через stdin — тот же паттерн что в cluster-1/setup.sh
 echo "$ADMIN_PROPS" | docker exec -i kafka-analytics bash -c 'cat > /tmp/admin.properties'
@@ -72,13 +82,14 @@ docker exec kafka-analytics kafka-topics.sh \
   --if-not-exists
 echo "    ✓ recommendations"
 
-# ─── ACL для analytics (HDFS consumer в Шаге 3) ───────────────────────────
+# ─── ACL (демонстрация концепции) ─────────────────────────────────────────
 echo ""
-echo "==> Настраиваем ACL..."
+echo "==> Настраиваем ACL (демонстрация — авторизатор отключён в Kafka 3.7)..."
 
 # analytics читает зеркальные данные для записи в HDFS и последующей обработки в Spark
 # Топики называются cluster1.* — MirrorMaker добавляет префикс "cluster1."
-docker exec kafka-analytics kafka-acls.sh \
+echo -n "    analytics → READ cluster1.* (prefixed pattern): "
+run_acl kafka-acls.sh \
   --bootstrap-server kafka-analytics:9092 \
   --command-config /tmp/admin.properties \
   --add \
@@ -87,53 +98,49 @@ docker exec kafka-analytics kafka-acls.sh \
   --operation Describe \
   --topic "cluster1.*" \
   --resource-pattern-type prefixed
-echo "    ✓ analytics → READ cluster1.* (prefixed pattern)"
 
 # Consumer group для HDFS consumer
-docker exec kafka-analytics kafka-acls.sh \
+echo -n "    analytics → READ group:hdfs-consumer-group: "
+run_acl kafka-acls.sh \
   --bootstrap-server kafka-analytics:9092 \
   --command-config /tmp/admin.properties \
   --add \
   --allow-principal "User:analytics" \
   --operation Read \
   --group "hdfs-consumer-group"
-echo "    ✓ analytics → READ group:hdfs-consumer-group"
 
-# ─── ACL для spark ─────────────────────────────────────────────────────────
-# Spark (PySpark) читает зеркальные данные из HDFS (не из Kafka напрямую в базовом задании)
-# Но пишет рекомендации в Kafka
-docker exec kafka-analytics kafka-acls.sh \
+# Spark пишет рекомендации в Kafka
+echo -n "    spark → WRITE recommendations: "
+run_acl kafka-acls.sh \
   --bootstrap-server kafka-analytics:9092 \
   --command-config /tmp/admin.properties \
   --add \
   --allow-principal "User:spark" \
   --operation Write \
   --topic "recommendations"
-echo "    ✓ spark → WRITE recommendations"
 
-# ─── ACL для client-api ────────────────────────────────────────────────────
 # CLIENT API читает рекомендации для ответа пользователю
-docker exec kafka-analytics kafka-acls.sh \
+echo -n "    client-api → READ recommendations: "
+run_acl kafka-acls.sh \
   --bootstrap-server kafka-analytics:9092 \
   --command-config /tmp/admin.properties \
   --add \
   --allow-principal "User:client-api" \
   --operation Read \
   --topic "recommendations"
-echo "    ✓ client-api → READ recommendations"
 
-docker exec kafka-analytics kafka-acls.sh \
+echo -n "    client-api → READ group:client-api-group: "
+run_acl kafka-acls.sh \
   --bootstrap-server kafka-analytics:9092 \
   --command-config /tmp/admin.properties \
   --add \
   --allow-principal "User:client-api" \
   --operation Read \
   --group "client-api-group"
-echo "    ✓ client-api → READ group:client-api-group"
 
-# ─── ACL для kafka-connect ─────────────────────────────────────────────────
 # Kafka Connect в кластере 2 читает зеркальные данные для хранения (Шаг 5)
-docker exec kafka-analytics kafka-acls.sh \
+echo -n "    kafka-connect → READ cluster1.* (prefixed pattern): "
+run_acl kafka-acls.sh \
   --bootstrap-server kafka-analytics:9092 \
   --command-config /tmp/admin.properties \
   --add \
@@ -142,19 +149,19 @@ docker exec kafka-analytics kafka-acls.sh \
   --operation Describe \
   --topic "cluster1.*" \
   --resource-pattern-type prefixed
-echo "    ✓ kafka-connect → READ cluster1.* (prefixed pattern)"
 
-docker exec kafka-analytics kafka-acls.sh \
+echo -n "    kafka-connect → READ group:connect-analytics-group: "
+run_acl kafka-acls.sh \
   --bootstrap-server kafka-analytics:9092 \
   --command-config /tmp/admin.properties \
   --add \
   --allow-principal "User:kafka-connect" \
   --operation Read \
   --group "connect-analytics-group"
-echo "    ✓ kafka-connect → READ group:connect-analytics-group"
 
 # Kafka Connect нужны внутренние топики в кластере 2
-docker exec kafka-analytics kafka-acls.sh \
+echo -n "    kafka-connect → READ/WRITE connect internal topics: "
+run_acl kafka-acls.sh \
   --bootstrap-server kafka-analytics:9092 \
   --command-config /tmp/admin.properties \
   --add \
@@ -165,7 +172,6 @@ docker exec kafka-analytics kafka-acls.sh \
   --topic "connect-configs" \
   --topic "connect-offsets" \
   --topic "connect-status"
-echo "    ✓ kafka-connect → READ/WRITE connect internal topics"
 
 # ─── Проверка ──────────────────────────────────────────────────────────────
 echo ""

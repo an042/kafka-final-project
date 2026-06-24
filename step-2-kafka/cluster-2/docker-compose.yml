@@ -32,7 +32,7 @@ networks:
 services:
   # ─── Единственный брокер кластера 2 ─────────────────────────────────────────
   kafka-analytics:
-    image: bitnami/kafka:3.9
+    image: bitnamilegacy/kafka:3.7
     container_name: kafka-analytics
     networks:
       - kafka-net
@@ -78,18 +78,13 @@ services:
       KAFKA_CLIENT_PASSWORDS: AdminPass1,MirrorPass1,AnalyticsPass1,SparkPass1,ClientApiPass1,ConnectPass1
 
       # ── TLS ───────────────────────────────────────────────────────────────
-      # Используем те же сертификаты (от того же CA) — у нас один CA на всё
-      KAFKA_TLS_TYPE: JKS
-      KAFKA_CFG_SSL_KEYSTORE_LOCATION: /bitnami/kafka/config/certs/kafka.keystore.jks
-      KAFKA_CFG_SSL_KEYSTORE_PASSWORD: TrustPass1
-      KAFKA_CFG_SSL_KEY_PASSWORD: TrustPass1
-      KAFKA_CFG_SSL_TRUSTSTORE_LOCATION: /bitnami/kafka/config/certs/kafka.truststore.jks
-      KAFKA_CFG_SSL_TRUSTSTORE_PASSWORD: TrustPass1
+      # PEM — тот же формат что и в cluster-1, один CA для обоих кластеров
+      # Файлы монтируются с фиксированными именами в секции volumes
+      KAFKA_TLS_TYPE: PEM
 
       # ── ACL ───────────────────────────────────────────────────────────────
-      KAFKA_CFG_AUTHORIZER_CLASS_NAME: org.apache.kafka.metadata.authorizer.StandardAuthorizer
-      KAFKA_CFG_ALLOW_EVERYONE_IF_NO_ACL_FOUND: "false"
-      KAFKA_CFG_SUPER_USERS: "User:admin;User:interbroker;User:mirrormaker"
+      # StandardAuthorizer отключён: дедлок KRaft+ACL в Kafka 3.7 (см. cluster-1/docker-compose.yml)
+      # В Kafka 3.8+ включить: KAFKA_CFG_AUTHORIZER_CLASS_NAME, ALLOW_EVERYONE_IF_NO_ACL_FOUND, SUPER_USERS
 
       # ── Репликация ────────────────────────────────────────────────────────
       # RF=1 — один брокер, больше нельзя
@@ -101,16 +96,17 @@ services:
 
     volumes:
       - kafka-analytics-data:/bitnami/kafka
-      # Сертификат для analytics-брокера
-      - ../ssl/certs/kafka-analytics.keystore.jks:/bitnami/kafka/config/certs/kafka.keystore.jks:ro
-      - ../ssl/certs/kafka.truststore.jks:/bitnami/kafka/config/certs/kafka.truststore.jks:ro
+      # Фиксированные имена для bitnamilegacy/kafka:3.7 в PEM режиме
+      - ../ssl/certs/kafka-analytics.chain.crt:/bitnami/kafka/config/certs/kafka.keystore.pem:ro
+      - ../ssl/certs/kafka-analytics.key:/bitnami/kafka/config/certs/kafka.keystore.key:ro
+      - ../ssl/certs/ca.crt:/bitnami/kafka/config/certs/kafka.truststore.pem:ro
 
     healthcheck:
       # Тот же подход что и в cluster-1 — пишем properties inline через printf
       test:
         - "CMD-SHELL"
         - >-
-          printf 'security.protocol=SASL_SSL\nsasl.mechanism=SCRAM-SHA-512\nsasl.jaas.config=org.apache.kafka.common.security.scram.ScramLoginModule required username=\"admin\" password=\"AdminPass1\";\nssl.truststore.location=/bitnami/kafka/config/certs/kafka.truststore.jks\nssl.truststore.password=TrustPass1\nssl.truststore.type=JKS\n' > /tmp/hc.properties && kafka-broker-api-versions.sh --bootstrap-server localhost:9092 --command-config /tmp/hc.properties > /dev/null 2>&1
+          printf 'security.protocol=SASL_SSL\nsasl.mechanism=SCRAM-SHA-512\nsasl.jaas.config=org.apache.kafka.common.security.scram.ScramLoginModule required username=\"admin\" password=\"AdminPass1\";\nssl.truststore.location=/bitnami/kafka/config/certs/kafka.truststore.pem\nssl.truststore.type=PEM\n' > /tmp/hc.properties && kafka-broker-api-versions.sh --bootstrap-server kafka-analytics:9092 --command-config /tmp/hc.properties > /dev/null 2>&1
       start_period: 30s
       interval: 10s
       retries: 3

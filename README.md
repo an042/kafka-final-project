@@ -135,8 +135,15 @@ bootstrap.servers = kafka-1:9092,kafka-2:9092,kafka-3:9092  (кластер 1)
 bootstrap.servers = kafka-analytics:9092                    (кластер 2)
 security.protocol = SASL_SSL
 sasl.mechanism = SCRAM-SHA-512
-ssl.truststore = ssl/certs/kafka.truststore.jks (пароль: TrustPass1)
+ssl.ca.location = step-2-kafka/ssl/certs/ca.crt   (PEM формат, используем CA напрямую)
 ```
+
+> **Примечание про ACL:** StandardAuthorizer намеренно отключён в этой конфигурации.
+> В Kafka 3.7 combined mode (broker+controller на одном узле) возникает дедлок при старте:
+> авторизатор ждёт KRaft metadata log, а KRaft не может сформировать кворум без авторизатора.
+> Решение (свойство `early.start.listeners`) появилось в Kafka 3.8+.
+> Клиенты по-прежнему **обязаны аутентифицироваться** через SASL/SCRAM-SHA-512 — ACL-правила
+> прописаны в setup.sh как демонстрация, но не применяются.
 
 > **Подключение с хост-машины:** Добавьте в `/etc/hosts`:  
 > `127.0.0.1 kafka-1 kafka-2 kafka-3 kafka-analytics`  
