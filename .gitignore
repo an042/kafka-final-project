@@ -1,0 +1,5 @@
+*.p12
+*.jks
+ssl/certs/
+.env
+
