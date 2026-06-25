@@ -1,0 +1,8 @@
+=== TLS сертификат брокера kafka-2 — subject и SAN ===
+subject=CN = kafka-2, OU = kafka, O = practicum, L = Moscow, C = RU
+X509v3 Subject Alternative Name:
+    DNS:kafka-2, IP Address:127.0.0.1
+
+Примечание: kafka-1 был недоступен в момент снятия снимка (OOM crash).
+Сертификаты всех брокеров выпущены одним CA (ca.crt) через generate-certs.sh.
+Каждый имеет SAN: DNS:kafka-N + IP:127.0.0.1 — требование Go 1.15+ (RFC 2818).

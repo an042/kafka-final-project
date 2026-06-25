@@ -1,4 +1,0 @@
-Error response from daemon: container 53ac630169ced719c8a7bad8b2fa04199a2c19b6ef5411291deddf21657c34fa is not running
-subject=CN = kafka-2, OU = kafka, O = practicum, L = Moscow, C = RU
-X509v3 Subject Alternative Name: 
-    DNS:kafka-2, IP Address:127.0.0.1

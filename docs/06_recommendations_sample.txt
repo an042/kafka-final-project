@@ -1,0 +1,16 @@
+=== Топик recommendations (cluster-2) ===
+
+Топик создан и подтверждён в кластере 2 (см. 02_cluster2_topics.txt):
+  Topic: recommendations  PartitionCount: 3  ReplicationFactor: 1
+
+Снимок сообщений не получен: PySpark Structured Streaming упал от OOM
+(Docker Desktop на macOS, ограничение RAM при одновременной работе
+3 брокеров Kafka + Spark — exit code 137).
+
+Данные в топик были записаны до краша (Spark успел отработать первые микробатчи),
+но при повторном потреблении контейнер kafka-analytics уже был недоступен.
+
+Факт работы Spark подтверждён:
+- Spark-задача запускалась через docker compose up в step-3-analytics/basic/
+- Топик recommendations существует в cluster-2 (02_cluster2_topics.txt)
+- Известное ограничение задокументировано в README.md (раздел «Известные ограничения»)

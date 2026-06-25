@@ -10,24 +10,24 @@
 | Kafka cluster-1 | 3 брокера (KRaft, SASL/TLS, JMX) | ✅ healthy |
 | Kafka cluster-2 | 1 брокер kafka-analytics | ✅ healthy |
 | MirrorMaker 2 | Репликация cluster1.* в cluster-2 | ✅ работает |
-| SHOP API (Go) | Публикация товаров в products-raw | ✅ 3000+ сообщений |
+| SHOP API (Go) | Публикация товаров в products-raw | ✅ 3640+ сообщений |
 | Stream Processor (Go) | Фильтрация tobacco/alcohol/weapons | ✅ работает |
-| Kafka Connect | FileStreamSink → products-filtered.jsonl | ✅ 1900+ строк |
-| PySpark Structured Streaming | Рекомендации из client-events | ✅ данные в топике |
+| Kafka Connect | FileStreamSink → products-filtered.jsonl | ✅ 2404 строки |
+| PySpark Structured Streaming | Топик recommendations создан, Spark запускался | ⚠️ OOM на macOS |
 | Prometheus | Scrape kafka-1:9101, kafka-2:9102, kafka-3:9103 | ✅ все up |
 | Grafana | Дашборд брокеров и топиков | ✅ доступна |
 | Alertmanager | Маршрутизация алертов → Telegram | ✅ работает |
 
 ## Файлы артефактов
 
-- `01_cluster1_topics.txt` — список и конфигурация топиков кластера 1
-- `02_cluster2_topics.txt` — список и конфигурация топиков кластера 2
-- `03_stream_processor_log.txt` — лог фильтрации (PASSED/FILTERED)
-- `04_products_filtered_sample.txt` — первые строки products-filtered.jsonl
-- `05_prometheus_targets.txt` — статус Prometheus targets
-- `06_recommendations_sample.txt` — сообщения из топика recommendations
-- `07_consumer_groups.txt` — consumer groups и их lag
-- `08_tls_cert_kafka1.txt` — TLS сертификаты с SAN
+- `01_cluster1_topics.txt` — топики кластера 1: products-raw, products-filtered, client-events (RF=3, 3 партиции)
+- `02_cluster2_topics.txt` — топики кластера 2: cluster1.* (MirrorMaker), recommendations
+- `03_stream_processor_log.txt` — лог фильтрации: PASSED (категории разрешены) / FILTERED (tobacco/alcohol/weapons)
+- `04_products_filtered_sample.txt` — первые 5 строк + итого 2404 строки в products-filtered.jsonl
+- `05_prometheus_targets.txt` — kafka-1/2/3 up; kafka-analytics down (JMX не настроен на cluster-2)
+- `06_recommendations_sample.txt` — топик существует (см. 02), снимок не захвачен из-за Spark OOM
+- `07_consumer_groups.txt` — consumer groups: stream-processor (products-raw), connect (products-filtered, lag=2-3)
+- `08_tls_cert_kafka2.txt` — TLS сертификат kafka-2 с SAN: DNS:kafka-2, IP:127.0.0.1
 
 ## Ключевые метрики (на момент проверки)
 
@@ -39,11 +39,11 @@
 
 **products-filtered** (кластер 1):
 - Kafka Connect lag: 2-3 сообщения (в реальном времени)
-- Файл: ~1900 строк
+- Файл на диске: 2404 строки (JSONL)
 
 **consumer groups**:
-- `stream-processor` — читает products-raw
-- `connect-filesink-group` — читает products-filtered, lag ~2
+- `stream-processor` — читает products-raw, 3 партиции
+- `connect-filesink-group` — читает products-filtered, lag ~2-3
 
 ## Ключевые технические решения
 
