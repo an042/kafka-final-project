@@ -11,29 +11,31 @@
 ## Архитектура
 
 ```
-SHOP API (Go)
-    │  продукты JSON → топик products-raw
-    ▼
-Kafka кластер 1  ──── SASL_SSL + SCRAM-SHA-512 ────────────────────────────┐
-    │  products-raw                                                          │
-    ▼                                                                        │
-Stream Processor (Go + sarama)                                              │
-    │  фильтрует tobacco / alcohol / weapons                                 │
-    ▼  → топик products-filtered                                             │
-Kafka Connect (FileStreamSink)                                              │
-    │  записывает products-filtered → /data/products-filtered.jsonl         │
-    ▼                                            ← client-events ←──────────┘
-MirrorMaker 2                                   CLIENT API (Go)
-    │  реплицирует cluster1.* → кластер 2        ├── search  : поиск в products.json
-    ▼                                            ├── event   : → Kafka кластер 1
-Kafka кластер 2 (аналитика)                      └── recommend: ← Kafka кластер 2
-    │  cluster1.client-events
-    ▼
-PySpark Structured Streaming
-    │  считает топ товаров (окно 5 мин)
-    ▼  → топик recommendations
+SHOP API (Go)                          CLIENT API (Go)
+│ → products-raw                        │ → client-events
+│                                       │ ← recommendations
+▼                                       ▼
+════════════ Kafka Кластер 1 (SASL_SSL + SCRAM-SHA-512) ════════════
+│                                       │
+▼                                       │ MirrorMaker 2
+Stream Processor (Go + sarama)          │ (реплицирует cluster1.*)
+│  фильтрует tobacco/alcohol/weapons    │
+│  → products-filtered                  ▼
+▼                              Kafka Кластер 2 (аналитика)
+Kafka Connect (FileStreamSink)          │  cluster1.client-events
+│  → /data/products-filtered.jsonl      │
+                                        ▼
+                               PySpark Structured Streaming
+                                        │  скользящее окно 5 мин
+                                        ▼  → recommendations
 
-Мониторинг: JMX Exporter → Prometheus → Grafana + Alertmanager → Telegram
+Мониторинг: kafka-{1,2,3} JMX Exporter → Prometheus → Grafana
+                                                      └─► Alertmanager → Telegram
+
+CLIENT API команды:
+  search   — локальный поиск по products.json
+  event    — отправить событие в Kafka Кластер 1 (client-events)
+  recommend — читать рекомендации из Kafka Кластер 2
 ```
 
 ## Стек технологий
@@ -53,6 +55,17 @@ PySpark Structured Streaming
 
 ```
 .
+├── docs/                               # Артефакты для куратора
+│   ├── ARTIFACTS.md                    # Сводная таблица проверки
+│   ├── 01_cluster1_topics.txt          # Топики кластера 1
+│   ├── 02_cluster2_topics.txt          # Топики кластера 2 (MirrorMaker)
+│   ├── 03_stream_processor_log.txt     # Лог PASSED/FILTERED
+│   ├── 04_products_filtered_sample.txt # Первые строки + счётчик JSONL
+│   ├── 05_prometheus_targets.txt       # Статус Prometheus targets
+│   ├── 06_recommendations_sample.txt   # Топик recommendations (OOM note)
+│   ├── 07_consumer_groups.txt          # Consumer groups и lag
+│   └── 08_tls_cert_kafka2.txt          # TLS сертификат с SAN
+│
 ├── step-1-sources/
 │   ├── shop-api/                   # Производитель товаров → products-raw
 │   │   ├── main.go                 # SyncProducer, цикл по products.json
@@ -66,13 +79,14 @@ PySpark Structured Streaming
 │
 ├── step-2-kafka/
 │   ├── ssl/
-│   │   ├── generate-certs.sh       # openssl: CA + 4 брокерских сертификата
+│   │   ├── generate-certs.sh       # openssl: CA + 4 брокерских сертификата с SAN
 │   │   └── certs/                  # ca.crt, kafka-{1,2,3,analytics}.{crt,key,chain.crt}
 │   ├── cluster-1/                  # Кластер 1: 3 брокера KRaft, SASL_SSL
 │   │   ├── docker-compose.yml      # kafka-1/2/3 + JMX Exporter порты 9101-9103
 │   │   ├── setup.sh                # Создание топиков и демо-ACL
 │   │   └── jmx/
-│   │       └── download-agent.sh   # Скачать jmx_prometheus_javaagent.jar
+│   │       ├── download-agent.sh   # Скачать jmx_prometheus_javaagent.jar
+│   │       └── kafka-jmx-exporter.yml  # JMX MBeans конфиг для агента
 │   ├── cluster-2/                  # Кластер 2: 1 брокер kafka-analytics
 │   │   ├── docker-compose.yml
 │   │   └── setup.sh                # Создание топика recommendations
@@ -82,7 +96,7 @@ PySpark Structured Streaming
 │
 ├── step-3-analytics/
 │   └── basic/
-│       ├── docker-compose.yml      # bitnami/spark:3.5
+│       ├── docker-compose.yml      # bitnamilegacy/spark:3.5
 │       └── spark-job/
 │           └── recommendations.py  # Structured Streaming: client-events → recommendations
 │
@@ -95,7 +109,7 @@ PySpark Structured Streaming
 │   └── basic/                      # Kafka Connect FileStreamSink
 │       ├── docker-compose.yml
 │       └── config/
-│           ├── connect-worker.properties    # SASL_SSL, StringConverter/JsonConverter
+│           ├── connect-worker.properties    # SASL_SSL, plugin.path, StringConverter
 │           └── connect-filesink.properties  # products-filtered → /data/*.jsonl
 │
 ├── step-6-monitoring/
@@ -104,7 +118,7 @@ PySpark Structured Streaming
 │   │   ├── prometheus.yml          # Scrape: kafka-1:9101, kafka-2:9102, kafka-3:9103
 │   │   └── alert.rules.yml         # 6 правил: BrokerDown, ConsumerLag, UnderReplicated…
 │   ├── jmx-exporter/
-│   │   └── kafka-jmx-exporter.yml  # JMX MBeans → Prometheus метрики
+│   │   └── kafka-jmx-exporter.yml  # JMX MBeans → Prometheus метрики (step-6 копия)
 │   ├── grafana/
 │   │   ├── provisioning/           # Автоматический datasource + папка дашбордов
 │   │   └── dashboards/
@@ -139,7 +153,7 @@ cd ../mirrormaker && docker compose up -d
 # проверка: topic "cluster1.products-raw" появился в кластере 2
 ```
 
-### Шаг 1: Источники данных
+### Шаги 1 и 4: Источники данных и Stream Processor
 
 ```bash
 # /etc/hosts (один раз):
@@ -148,12 +162,12 @@ cd ../mirrormaker && docker compose up -d
 # SHOP API — бесконечно публикует товары в products-raw
 cd step-1-sources/shop-api && go run .
 
-# Stream Processor — фильтрует products-raw → products-filtered
+# Шаг 4: Stream Processor — фильтрует products-raw → products-filtered
 cd step-4-stream-processor && go run .
 
 # CLIENT API
 cd step-1-sources/client-api
-go run . search "ноутбук"            # локальный поиск
+go run . search "ноутбук"            # локальный поиск по products.json
 go run . event view prod-001         # отправить событие → client-events
 go run . recommend                   # читать рекомендации из кластера 2
 ```
@@ -240,8 +254,8 @@ Healthcheck обращается к `kafka-1:9092` (не `localhost:9092`), ин
 | 1. Источники | SHOP API, CLIENT API (Go + sarama + SCRAM) | ✅ запущено и проверено |
 | 2. Kafka | Кластер 1 (3 брокера, KRaft, SASL_SSL, JMX) + Кластер 2 + MM2 | ✅ запущено и проверено |
 | 3. Аналитика (базовый) | PySpark Structured Streaming: client-events → recommendations | ✅ запущено, данные в топике |
-| 4. Stream Processor | Фильтрация tobacco/alcohol/weapons (Go); 1800+ записей в products-filtered | ✅ запущено и проверено |
-| 5. Хранилище (базовый) | Kafka Connect FileStreamSink: 1800+ строк в products-filtered.jsonl | ✅ запущено и проверено |
+| 4. Stream Processor | Фильтрация tobacco/alcohol/weapons (Go); 2400+ записей в products-filtered | ✅ запущено и проверено |
+| 5. Хранилище (базовый) | Kafka Connect FileStreamSink: 2404 строки в products-filtered.jsonl | ✅ запущено и проверено |
 | 6. Мониторинг | Prometheus (kafka-1/2/3 JMX up), Grafana, Alertmanager → Telegram | ✅ запущено и проверено |
 
 ## Известные ограничения локального запуска
