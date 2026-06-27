@@ -33,8 +33,8 @@ Kafka Connect (FileStreamSink)          │  cluster1.client-events
                                                       └─► Alertmanager → Telegram
 
 CLIENT API команды:
-  search   — локальный поиск по products.json
-  event    — отправить событие в Kafka Кластер 1 (client-events)
+  search    — поиск по products.json + событие в Kafka (client-events) для аналитики
+  event     — отправить произвольное событие в Kafka Кластер 1 (client-events)
   recommend — читать рекомендации из Kafka Кластер 2
 ```
 
@@ -43,7 +43,7 @@ CLIENT API команды:
 | Компонент | Технология | Обоснование |
 |---|---|---|
 | SHOP API, CLIENT API | Go + IBM/sarama | Продолжаем стек предыдущих практических работ (PW7) |
-| Stream Processor | Go + IBM/sarama | Consumer group + SyncProducer; достаточно для фильтрации без внешних фреймворков |
+| Stream Processor | Go + Goka (lovoo/goka) | Декларативный DSL поверх sarama; CLI для управления запрещёнными категориями |
 | Spark-задача | Python (PySpark) | Spark не поддерживает Go; PySpark — стандарт для аналитики |
 | Хранилище (базовый) | Kafka Connect FileStreamSink | Встроен в Kafka, не требует плагинов; достаточно для демонстрации |
 | Мониторинг | Prometheus + Grafana + Alertmanager | Де-факто стандарт для Kafka мониторинга |
@@ -100,9 +100,10 @@ CLIENT API команды:
 │       └── spark-job/
 │           └── recommendations.py  # Structured Streaming: client-events → recommendations
 │
-├── step-4-stream-processor/        # Фильтр запрещённых товаров
-│   ├── main.go                     # ConsumerGroup + SyncProducer, bannedCategories map
-│   ├── go.mod
+├── step-4-stream-processor/        # Фильтр запрещённых товаров (Goka + CLI)
+│   ├── main.go                     # Goka Processor; CLI: process/list/add/remove
+│   ├── go.mod                      # lovoo/goka v1.1.16 + IBM/sarama
+│   ├── banned_categories.json      # Список запрещённых категорий (управляется CLI)
 │   └── scram/scram.go
 │
 ├── step-5-storage/

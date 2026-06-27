@@ -41,6 +41,7 @@ from pyspark.sql.functions import (
     collect_list,  # агрегация: список значений в массив
     current_timestamp,  # текущее время (для generated_at)
     date_format,       # форматирование даты
+    slice,         # обрезка массива: slice(arr, start, len) → первые N элементов
 )
 # types — схема данных (соответствует ClientEvent из client-api/main.go)
 from pyspark.sql.types import (
@@ -184,9 +185,13 @@ events_with_product = events.filter(
 
 # Конвертируем строку timestamp в тип TimestampType для работы с window()
 # to_timestamp() понимает RFC3339 формат из Go (2006-01-02T15:04:05Z)
-events_timed = events_with_product.withColumn(
-    "event_time",
-    to_timestamp(col("timestamp"))  # строка → timestamp
+# withWatermark — объявляем допустимое опоздание событий (10 минут).
+# Spark сможет удалять старые состояния агрегации и корректно закрывать окна.
+# Без watermark агрегация хранит все окна в памяти вечно (утечка состояния).
+events_timed = (
+    events_with_product
+    .withColumn("event_time", to_timestamp(col("timestamp")))  # строка → timestamp
+    .withWatermark("event_time", "10 minutes")  # опоздавшие >10 мин события игнорируются
 )
 
 # ── Агрегация: топ товаров в скользящем окне ─────────────────────────────────
@@ -220,8 +225,10 @@ global_top = (
     product_counts
     # Группируем только по окну (глобальный топ, не персонализированный)
     .groupBy("window", "user_id")
-    # Собираем product_id в список (ordered внутри groupBy не гарантирован)
-    .agg(collect_list("product_id").alias("product_ids"))
+    # collect_list собирает все product_id окна в массив.
+    # slice(..., 1, 5) обрезает до первых 5 элементов (1-based индекс).
+    # В streaming режиме сортировка внутри агрегации недоступна — берём первые 5.
+    .agg(slice(collect_list("product_id"), 1, 5).alias("product_ids"))
 )
 
 # ── Формируем финальный JSON для топика recommendations ───────────────────────

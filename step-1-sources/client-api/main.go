@@ -181,8 +181,92 @@ func buildSaramaConfig(user, password string, tlsCfg *tls.Config) *sarama.Config
 	return cfg
 }
 
+// publishSearchEvent публикует поисковый запрос в топик client-events кластера 1.
+// Вызывается из cmdSearch после локального поиска — для аналитики в PySpark.
+// Ошибки Kafka не прерывают поиск: warn-лог, результаты пользователю уже показаны.
+func publishSearchEvent(query string) {
+	// Кластер 1 — основной, туда поступают все клиентские события
+	brokersStr := getEnv("KAFKA_BROKERS_C1", "kafka-1:9092,kafka-2:9092,kafka-3:9092")
+	brokers := strings.Split(brokersStr, ",")
+
+	// Учётные данные client-api в кластере 1
+	user := getEnv("KAFKA_USER_C1", "client-api")
+	password := getEnv("KAFKA_PASSWORD_C1", "ClientApiPass1")
+
+	// CA сертификат общий для обоих кластеров
+	caFile := getEnv("KAFKA_TLS_CA", "../ssl/certs/ca.crt")
+
+	// Строим TLS конфиг
+	tlsCfg, err := buildTLSConfig(caFile)
+	if err != nil {
+		// Поиск уже выполнен — не прерываем, только логируем
+		log.Printf("WARN: TLS ошибка, событие поиска не отправлено: %v", err)
+		return
+	}
+
+	// Строим sarama конфиг с SASL/SCRAM-SHA-512
+	cfg := buildSaramaConfig(user, password, tlsCfg)
+	cfg.Producer.RequiredAcks = sarama.WaitForAll   // Ждём подтверждения всех ISR
+	cfg.Producer.Idempotent = true                   // Защита от дублирования при ретраях
+	cfg.Net.MaxOpenRequests = 1                      // Обязательно при Idempotent=true
+	cfg.Producer.Return.Successes = true             // SyncProducer требует Successes=true
+	cfg.Producer.Return.Errors = true                // SyncProducer требует Errors=true
+
+	// Создаём синхронный продюсер
+	producer, err := sarama.NewSyncProducer(brokers, cfg)
+	if err != nil {
+		log.Printf("WARN: не удалось подключиться к Kafka, событие поиска не отправлено: %v", err)
+		return
+	}
+	defer producer.Close()
+
+	// Временная метка в RFC3339 (стандарт для аналитики в Spark)
+	now := time.Now().UTC()
+
+	// Псевдо-ID события: тип + Unix timestamp в наносекундах
+	eventID := fmt.Sprintf("search-%d", now.UnixNano())
+
+	// User ID — в учебном проекте заглушка, в продакшне из JWT/сессии
+	userID := getEnv("CLIENT_USER_ID", "user-demo-001")
+
+	// Формируем событие поиска
+	event := ClientEvent{
+		EventID:   eventID,                  // Уникальный идентификатор
+		EventType: "search",                 // Тип события
+		UserID:    userID,                   // Кто искал
+		ProductID: "",                       // Нет конкретного товара у поискового запроса
+		Query:     query,                    // Что искали
+		Timestamp: now.Format(time.RFC3339), // Когда произошло событие
+	}
+
+	// Сериализуем в JSON
+	value, err := json.Marshal(event)
+	if err != nil {
+		log.Printf("WARN: ошибка сериализации события поиска: %v", err)
+		return
+	}
+
+	// Ключ = user_id: все события одного пользователя → одна партиция (порядок гарантирован)
+	msg := &sarama.ProducerMessage{
+		Topic: "client-events",
+		Key:   sarama.StringEncoder(userID),
+		Value: sarama.ByteEncoder(value),
+	}
+
+	// Синхронная отправка с ожиданием ACK от всех ISR
+	partition, offset, err := producer.SendMessage(msg)
+	if err != nil {
+		log.Printf("WARN: ошибка отправки события поиска в Kafka: %v", err)
+		return
+	}
+
+	// Подтверждение в лог (не в stdout — не мешает выводу результатов поиска)
+	log.Printf("Событие поиска отправлено: query=%q → client-events partition=%d offset=%d",
+		query, partition, offset)
+}
+
 // cmdSearch — команда поиска товаров по ключевому слову.
-// Читает products.json локально (без Kafka). В Шаге 5 будет заменена на Elasticsearch.
+// Ищет локально по products.json И отправляет запрос в Kafka для аналитики (PySpark).
 // query — поисковый запрос (проверяет name, description, tags, category).
 func cmdSearch(query string) {
 	// Путь к каталогу товаров — products.json создан в shop-api/data/
@@ -243,6 +327,10 @@ func cmdSearch(query string) {
 	} else {
 		fmt.Printf("Найдено: %d товар(ов)\n", found)
 	}
+
+	// Публикуем событие поиска в Kafka для аналитики в PySpark (Шаг 3).
+	// Выполняется после вывода результатов — ошибки Kafka не блокируют пользователя.
+	publishSearchEvent(query)
 }
 
 // cmdRecommend — команда получения рекомендаций из Kafka кластера 2.
